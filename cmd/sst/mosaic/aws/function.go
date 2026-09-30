@@ -18,6 +18,7 @@ import (
 	"github.com/sst/sst/v3/cmd/sst/mosaic/aws/bridge"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/watcher"
 	"github.com/sst/sst/v3/pkg/bus"
+	"github.com/sst/sst/v3/pkg/flag"
 	"github.com/sst/sst/v3/pkg/project"
 	"github.com/sst/sst/v3/pkg/runtime"
 	"github.com/sst/sst/v3/pkg/server"
@@ -83,10 +84,17 @@ func function(ctx context.Context, input input) {
 	workers := map[string]*WorkerInfo{}
 	evts := bus.Subscribe(&watcher.FileChangedEvent{}, &project.CompleteEvent{}, &runtime.BuildInput{}, &FunctionInvokedEvent{})
 	go fileLogger(input.project)
+	// Functions that share a prebuilt bundle are served by a worker pool; every
+	// handler and message below first offers itself to the pool and keeps the
+	// upstream one-worker-per-stub path for everything else.
+	poolRT := newPoolRuntime(ctx, input, server, DefaultPoolConfig())
 
 	input.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/invocation/next`, func(w http.ResponseWriter, r *http.Request) {
 		log.Info("got next request", "workerID", r.PathValue("workerID"))
 		workerID := r.PathValue("workerID")
+		if poolRT.handleNext(w, r, workerID) {
+			return
+		}
 		ch := nextChan[workerID]
 		select {
 		case <-r.Context().Done():
@@ -120,6 +128,9 @@ func function(ctx context.Context, input input) {
 
 	input.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/init/error`, func(w http.ResponseWriter, r *http.Request) {
 		workerID := r.PathValue("workerID")
+		if poolRT.handleInitError(w, r, workerID) {
+			return
+		}
 		log.Info("got init error", "workerID", workerID, "requestID", r.PathValue("requestID"))
 		writer := input.client.NewWriter(bridge.MessageInitError, input.prefix+"/"+workerID+"/in")
 		var buf bytes.Buffer
@@ -141,6 +152,9 @@ func function(ctx context.Context, input input) {
 	input.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/invocation/{requestID}/response`, func(w http.ResponseWriter, r *http.Request) {
 		workerID := r.PathValue("workerID")
 		requestID := r.PathValue("requestID")
+		if poolRT.handleResponse(w, r, workerID, requestID) {
+			return
+		}
 		log.Info("got response", "workerID", workerID, "requestID", r.PathValue("requestID"))
 		writer := input.client.NewWriter(bridge.MessageResponse, input.prefix+"/"+workerID+"/in")
 		writer.SetID(requestID)
@@ -176,6 +190,9 @@ func function(ctx context.Context, input input) {
 	input.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/invocation/{requestID}/error`, func(w http.ResponseWriter, r *http.Request) {
 		workerID := r.PathValue("workerID")
 		requestID := r.PathValue("requestID")
+		if poolRT.handleError(w, r, workerID, requestID) {
+			return
+		}
 		log.Info("got error", "workerID", workerID, "requestID", r.PathValue("requestID"))
 		writer := input.client.NewWriter(bridge.MessageError, input.prefix+"/"+workerID+"/in")
 		writer.SetID(requestID)
@@ -224,6 +241,12 @@ func function(ctx context.Context, input input) {
 		}
 		builds[functionID] = build
 		return build
+	}
+
+	poolRT.build = getBuildOutput
+	poolRT.targets = func(functionID string) (*runtime.BuildInput, bool) {
+		target, ok := targets[functionID]
+		return target, ok
 	}
 
 	startWorker := func(functionID string, workerID string) bool {
@@ -311,13 +334,16 @@ func function(ctx context.Context, input input) {
 					log.Error("function not found", "functionID", init.FunctionID)
 					continue
 				}
+				if poolRT.init(msg.Source, init.FunctionID, init.Environment, ch) {
+					continue
+				}
 				workerID := msg.Source
 				if _, ok := workers[workerID]; ok {
 					log.Error("got reboot but worker already exists", "workerID", workerID, "functionID", init.FunctionID)
 					continue
 				}
 				log.Info("worker init", "workerID", msg.Source, "functionID", init.FunctionID)
-				workerEnv[workerID] = init.Environment
+				workerEnv[workerID] = ApplyDevEnvOverrides(init.Environment, os.Environ(), flag.SST_DEV_ENV_OVERRIDES)
 				if ok := startWorker(init.FunctionID, workerID); !ok {
 					result, err := http.Post("http://"+server+workerID+"/runtime/init/error", "application/json", strings.NewReader(`{"errorMessage":"Function failed to build"}`))
 					if err != nil {
@@ -352,6 +378,9 @@ func function(ctx context.Context, input input) {
 				writer := input.client.NewWriter(bridge.MessagePing, input.prefix+"/"+msg.Source+"/in")
 				json.NewEncoder(writer).Encode(bridge.PingBody{})
 				writer.Close()
+				if poolRT.next(msg.Source, msg.Body) {
+					continue
+				}
 				ch, ok := nextChan[msg.Source]
 				if !ok {
 					ch = make(chan io.Reader, 100)
@@ -368,6 +397,8 @@ func function(ctx context.Context, input input) {
 				continue
 			}
 
+		case id := <-poolRT.stopped:
+			poolRT.workerDied(id)
 		case info := <-workerShutdownChan:
 			log.Info("worker died", "workerID", info.WorkerID)
 			existing, ok := workers[info.WorkerID]
@@ -402,6 +433,7 @@ func function(ctx context.Context, input input) {
 				}
 			case *runtime.BuildInput:
 				targets[evt.FunctionID] = evt
+				poolRT.target(evt)
 			case *watcher.FileChangedEvent:
 				log.Info("checking if code needs to be rebuilt", "file", evt.Path)
 				toBuild := map[string]bool{}

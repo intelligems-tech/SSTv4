@@ -38,3 +38,17 @@ func isTrue(name string) bool {
 	}
 	return false
 }
+
+// Pooled dev workers (functions that share a prebuilt bundle and set
+// `pool: "bundle"`). Sizes and timeouts mirror the SST v2 fork's knobs.
+var SST_WORKER_POOL_SIZE = os.Getenv("SST_WORKER_POOL_SIZE")
+var SST_WORKER_CONCURRENCY = os.Getenv("SST_WORKER_CONCURRENCY")
+var SST_WORKER_IDLE_TIMEOUT = os.Getenv("SST_WORKER_IDLE_TIMEOUT")
+var SST_WARMUP_COUNT = os.Getenv("SST_WARMUP_COUNT")
+var SST_WORKER_MAX_HEAP_MB = os.Getenv("SST_WORKER_MAX_HEAP_MB")
+var SST_SOURCE_MAPS = isTrue("SST_SOURCE_MAPS")
+var SST_DEBUG_MEMORY = isTrue("SST_DEBUG_MEMORY")
+
+// SST_DEV_ENV_OVERRIDES names env keys (comma separated) whose values in the
+// `sst dev` process override the values a deployed stub forwards.
+var SST_DEV_ENV_OVERRIDES = os.Getenv("SST_DEV_ENV_OVERRIDES")
