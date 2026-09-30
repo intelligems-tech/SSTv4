@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Builds the fork's CLI into sdk/js/bin/native for a `pnpm link`ed checkout.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/../../.." && pwd)"
+version="${SST_LOCAL_VERSION:-4.17.0-ig.1}"
+cd "$root"
+bun i >/dev/null
+SKIP_BRIDGE_TASK=1 ./platform/scripts/build
+mkdir -p sdk/js/bin/native
+go build -ldflags "-X main.version=${version}" -o sdk/js/bin/native/sst ./cmd/sst
+echo "built $("$root/sdk/js/bin/native/sst" version)"

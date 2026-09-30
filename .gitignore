@@ -38,3 +38,4 @@ examples/**/uv.lock
 examples/**/deno.lock
 examples/**/Cargo.lock
 examples/**/.env.*
+/sdk/js/bin/native
