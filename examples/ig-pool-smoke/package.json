@@ -1,0 +1,8 @@
+{
+  "name": "ig-pool-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "bash ./smoke.sh"
+  }
+}

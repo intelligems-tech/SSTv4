@@ -7,7 +7,10 @@ import { execFileSync } from "child_process";
 let resolved = process.env.SST_BIN_PATH;
 
 if (!resolved) {
-  const name = `sst-${process.platform}-${process.arch}`;
+  // Binary packages are published as `<package name>-<platform>-<arch>`, so a
+  // renamed fork resolves its own binaries.
+  const pkg = require("../package.json");
+  const name = `${pkg.name}-${process.platform}-${process.arch}`;
   const binary = process.platform === "win32" ? "sst.exe" : "sst";
 
   try {

@@ -1,13 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "sst",
+  "name": "@intelligems/sst-ion",
+  "description": "Intelligems fork of the SST v4 CLI: pooled local workers for prebuilt bundles and prebuilt S3 code packages for functions.",
   "type": "module",
   "sideEffects": false,
   "version": "0.0.0",
   "main": "./dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anomalyco/sst.git"
+    "url": "git+https://github.com/intelligems-io/sst.git"
   },
   "license": "MIT",
   "exports": {
