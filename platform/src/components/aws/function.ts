@@ -46,7 +46,7 @@ import { Permission, permission } from "./permission.js";
 import { Vpc } from "./vpc.js";
 import { Image } from "@pulumi/docker-build";
 import { rpc } from "../rpc/rpc.js";
-import { parseRoleArn, splitQualifiedFunctionArn } from "./helpers/arn.js";
+import { splitQualifiedFunctionArn } from "./helpers/arn.js";
 import { resolveFunctionCode } from "./helpers/function-code.js";
 import { RandomBytes } from "@pulumi/random";
 import { lazy } from "../../util/lazy.js";
@@ -1767,7 +1767,7 @@ export class Function extends Component implements Link.Linkable {
   private constructorName: string;
   private durable: boolean;
   private function: Output<lambda.Function>;
-  private role: iam.Role;
+  private role: iam.Role | undefined;
   private logGroup: Output<cloudwatch.LogGroup | undefined>;
   private urlEndpoint: Output<string | undefined>;
   private eventInvokeConfig?: lambda.FunctionEventInvokeConfig;
@@ -2319,12 +2319,9 @@ export class Function extends Component implements Link.Linkable {
 
     function createRole() {
       if (args.role) {
-        return iam.Role.get(
-          `${name}Role`,
-          output(args.role).apply(parseRoleArn).roleName,
-          {},
-          { parent },
-        );
+        // An existing role goes to the Lambda function as its ARN. Reading
+        // it would add a resource, and a state checkpoint, per function.
+        return undefined;
       }
 
       const policy = all([args.permissions || [], linkPermissions, dev]).apply(
@@ -3058,7 +3055,8 @@ export class Function extends Component implements Link.Linkable {
   public get nodes() {
     return {
       /**
-       * The IAM Role the function will use.
+       * The IAM Role the function will use, or `undefined` when an existing
+       * `role` was passed in.
        */
       role: this.role,
       /**

@@ -829,7 +829,8 @@ export abstract class SsrSite extends Component implements Link.Linkable {
         },
         _dev: {
           ...dev.outputs,
-          aws: { role: server.nodes.role.arn },
+          // The server function is built here without a `role`, so SST owns one.
+          aws: { role: server.nodes.role!.arn },
         },
       });
       return;

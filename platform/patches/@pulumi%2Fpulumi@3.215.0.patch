@@ -1,0 +1,32 @@
+--- a/resource.js
++++ b/resource.js
+@@ -341,6 +341,12 @@
+         }
+     }
+     static stackTrace(skip) {
++        // A resource's stack trace and source position are diagnostics SST
++        // never surfaces, and they were a quarter of every state checkpoint
++        // the engine wrote per step. They are captured only on request.
++        if (process.env.PULUMI_NODEJS_RESOURCE_STACK_TRACES !== "1") {
++            return [];
++        }
+         let stack = Resource.callsites();
+         if (stack.length < skip + 1) {
+             return [];
+--- a/runtime/debuggable.js
++++ b/runtime/debuggable.js
+@@ -82,7 +82,13 @@
+     // Whack some stack onto the promise.  Leave them non-enumerable to avoid awkward rendering.
+     Object.defineProperty(p, "_debugId", { writable: true, value: promiseId });
+     Object.defineProperty(p, "_debugCtx", { writable: true, value: ctx });
+-    Object.defineProperty(p, "_debugStackTrace", { writable: true, value: new Error().stack });
++    // Capturing a stack per promise costs a formatted trace each, and with
++    // source-map-support installed by `cmd/run` a mapped one. Only the leak
++    // report reads it, so it is captured only when that report is enabled.
++    Object.defineProperty(p, "_debugStackTrace", {
++        writable: true,
++        value: exports.debugPromiseLeaks ? new Error().stack : undefined,
++    });
+     promiseId++;
+     if (!leakDetectorScheduled) {
+         process.on("exit", (code) => {
