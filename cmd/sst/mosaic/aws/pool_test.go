@@ -297,3 +297,27 @@ func TestParsePoolConfigDefaultsAndBounds(t *testing.T) {
 		t.Fatalf("bounds: %+v", cfg)
 	}
 }
+
+func TestAnnounceReturnsAHeldRequestOnce(t *testing.T) {
+	p, f := newTestPool(testConfig())
+	key, _ := p.Target("fnA", "nodejs22.x", "/bundle")
+	ready(p, key)
+	p.Register("srcA", "fnA", nil)
+	p.Dispatch(invocation("srcA", "r1"))
+	worker := f.started[0]
+
+	inv, ok := p.Announce(worker, "r1")
+	if !ok || inv.FunctionID != "fnA" || inv.Source != "srcA" {
+		t.Fatalf("the first announce must return the held request, got %+v %v", inv, ok)
+	}
+	if _, ok := p.Announce(worker, "r1"); ok {
+		t.Fatal("a request must be announced only once")
+	}
+	if _, ok := p.Announce(worker, "unknown"); ok {
+		t.Fatal("an unknown request must not be announced")
+	}
+	p.Complete(worker, "r1")
+	if _, ok := p.Announce(worker, "r1"); ok {
+		t.Fatal("a completed request must not be announced")
+	}
+}

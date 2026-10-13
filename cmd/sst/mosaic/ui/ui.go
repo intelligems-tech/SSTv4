@@ -49,13 +49,20 @@ type UI struct {
 	timing     map[string]time.Time
 	parents    map[string]string
 	workerTime map[string]time.Time
-	complete   *project.CompleteEvent
-	footer     *footer
-	buffer     []interface{}
-	hasBlank   bool
-	hasHeader  bool
-	options    *Options
-	log        *os.File
+	// Handler a pooled request runs, by request id, while it runs.
+	handlers  map[string]invocationHandler
+	complete  *project.CompleteEvent
+	footer    *footer
+	buffer    []interface{}
+	hasBlank  bool
+	hasHeader bool
+	options   *Options
+	log       *os.File
+}
+
+type invocationHandler struct {
+	key   string
+	label string
 }
 
 type Options struct {
@@ -103,6 +110,7 @@ func New(ctx context.Context, options ...Option) *UI {
 	slog.Info("initializing ui", "isTTY", isTTY)
 	result := &UI{
 		workerTime: map[string]time.Time{},
+		handlers:   map[string]invocationHandler{},
 		hasBlank:   false,
 		options:    opts,
 	}
@@ -203,22 +211,26 @@ func (u *UI) Event(unknown interface{}) {
 		u.printEvent(TEXT_DANGER, fmt.Sprintf("%-11s", "Missing"), fmt.Sprintf("Dev command not configured for the \"%s\" task. Set `dev.command` to configure how the task works in `sst dev`.", evt.Name))
 
 	case *aws.FunctionInvokedEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		if evt.Handler != "" || evt.Label != "" {
+			u.handlers[evt.RequestID] = invocationHandler{key: evt.Handler, label: evt.Label}
+		}
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		u.workerTime[evt.WorkerID] = time.Now()
-		u.printEvent(GetColor(evt.WorkerID), TEXT_NORMAL_BOLD.Render(fmt.Sprintf("%-11s", "Invoke")), u.functionName(evt.FunctionID))
+		u.printEvent(GetColor(evt.WorkerID), TEXT_NORMAL_BOLD.Render(fmt.Sprintf("%-11s", "Invoke")), u.invocationName(evt))
 
 	case *aws.FunctionResponseEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		defer delete(u.handlers, evt.RequestID)
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		duration := time.Since(u.workerTime[evt.WorkerID]).Round(time.Millisecond)
 		formattedDuration := fmt.Sprintf("took %.9s", fmt.Sprintf("+%v", duration))
-		u.printEvent(GetColor(evt.WorkerID), "Done", formattedDuration)
+		u.printEvent(GetColor(evt.WorkerID), "Done", DurationStyle(duration).Render(formattedDuration))
 
 	case *aws.FunctionLogEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		duration := time.Since(u.workerTime[evt.WorkerID]).Round(time.Millisecond)
@@ -239,7 +251,8 @@ func (u *UI) Event(unknown interface{}) {
 		u.printEvent(TEXT_SUCCESS, "Build", u.functionName(evt.FunctionID))
 
 	case *aws.FunctionErrorEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		defer delete(u.handlers, evt.RequestID)
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		u.printEvent(GetColor(evt.WorkerID), TEXT_DANGER.Render(fmt.Sprintf("%-11s", "Error")), u.functionName(evt.FunctionID))
@@ -709,6 +722,46 @@ func Success(msg string) {
 
 func Error(msg string) {
 	fmt.Fprintln(os.Stderr, strings.TrimSpace(TEXT_DANGER_BOLD.Render(IconX)+"  "+TEXT_NORMAL.Render(msg)))
+}
+
+// invocationName names an invocation: the handler label a pooled bundle
+// reported, else the function's handler.
+func (u *UI) invocationName(evt *aws.FunctionInvokedEvent) string {
+	if evt.Label == "" {
+		return u.functionName(evt.FunctionID)
+	}
+	if evt.Handler != "" && evt.Handler != evt.Label {
+		return evt.Label + "  " + TEXT_DIM.Render(evt.Handler)
+	}
+	return evt.Label
+}
+
+// matchInvocation applies the filter to a function, or to the handler a
+// pooled request runs.
+func (u *UI) matchInvocation(functionID string, requestID string) bool {
+	if u.matchFilter(functionID) {
+		return true
+	}
+	handler, ok := u.handlers[requestID]
+	if !ok {
+		return false
+	}
+	filter := strings.ToLower(u.options.Filter)
+	return strings.Contains(strings.ToLower(handler.key), filter) ||
+		strings.Contains(strings.ToLower(handler.label), filter)
+}
+
+// DurationStyle colours an invocation duration: under a second is fine,
+// under three is slow, anything longer is a problem.
+func DurationStyle(duration time.Duration) lipgloss.Style {
+	switch {
+	case duration < time.Second:
+		return TEXT_SUCCESS
+	case duration < 3*time.Second:
+		return TEXT_WARNING
+	default:
+		return TEXT_DANGER
+	}
 }
 
 func (u *UI) matchFilter(id string) bool {

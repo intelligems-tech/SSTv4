@@ -100,6 +100,19 @@ function errorBody(ex: any) {
   };
 }
 
+function describeEvent(event: unknown): { key: string; label: string } {
+  try {
+    const result = describe?.(event) as
+      | { key?: unknown; label?: unknown }
+      | undefined;
+    const key = typeof result?.key === "string" ? result.key : "";
+    const label = typeof result?.label === "string" ? result.label : key;
+    return { key, label };
+  } catch {
+    return { key: "", label: "" };
+  }
+}
+
 let lastContext: LambdaContext | undefined;
 
 async function postError(context: LambdaContext | undefined, ex: any) {
@@ -118,11 +131,15 @@ process.on("unhandledRejection", (ex) => void postError(lastContext, ex));
 process.on("uncaughtException", (ex) => void postError(lastContext, ex));
 
 let fn: any;
+// Optional `describe(event) => { key, label }` export: names the handler a
+// dispatching bundle routes the event to, for the dev UI.
+let describe: ((event: unknown) => unknown) | undefined;
 const loadStart = Date.now();
 try {
   if (!file) throw new Error(`Could not find handler file for "${handler}"`);
   const mod = await import(url.pathToFileURL(file).href);
   fn = mod[handlerName];
+  if (typeof mod.describe === "function") describe = mod.describe;
   if (!fn) {
     throw new Error(
       `Function "${handlerName}" not found in "${file}". Found ${Object.keys(mod).join(", ")}`,
@@ -165,6 +182,7 @@ async function runLoop() {
     try {
       const result = await fetch(
         AWS_LAMBDA_RUNTIME_API + `/runtime/invocation/next`,
+        describe ? { headers: { "Lambda-Runtime-Sst-Describe": "1" } } : {},
       );
       const body = (await result.json()) as {
         event: unknown;
@@ -233,6 +251,13 @@ async function runLoop() {
     lastContext = context;
     (global as any)[Symbol.for("aws.lambda.runtime.requestId")] =
       context.awsRequestId;
+
+    if (describe) {
+      await post(
+        `/runtime/invocation/${context.awsRequestId}/describe`,
+        describeEvent(event),
+      ).catch(() => {});
+    }
 
     const store: InvocationStore = {
       requestID: context.awsRequestId,

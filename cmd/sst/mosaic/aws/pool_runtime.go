@@ -301,18 +301,55 @@ func (r *poolRuntime) handleNext(w http.ResponseWriter, req *http.Request, worke
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 		w.WriteHeader(200)
 		w.Write(body)
-		bus.Publish(&FunctionInvokedEvent{
-			FunctionID: inv.FunctionID,
-			WorkerID:   inv.Source,
-			RequestID:  inv.RequestID,
-			Input:      inv.Body,
-		})
+		// A worker that describes requests posts the handler label before it
+		// runs the handler; the event is published then (handleDescribe).
+		if req.Header.Get(describeHeader) == "" {
+			r.announce(workerID, inv.RequestID, describeBody{})
+		}
 		return true
 	}
 }
 
+// describeHeader is set on `/next` by a worker whose bundle exports
+// `describe(event)`.
+const describeHeader = "Lambda-Runtime-Sst-Describe"
+
+type describeBody struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// announce publishes a held request's FunctionInvokedEvent once.
+func (r *poolRuntime) announce(workerID string, requestID string, desc describeBody) {
+	inv, ok := r.pool.Announce(workerID, requestID)
+	if !ok {
+		return
+	}
+	bus.Publish(&FunctionInvokedEvent{
+		FunctionID: inv.FunctionID,
+		WorkerID:   inv.Source,
+		RequestID:  inv.RequestID,
+		Input:      inv.Body,
+		Handler:    desc.Key,
+		Label:      desc.Label,
+	})
+}
+
+// handleDescribe receives the handler a pooled worker resolved for a request.
+func (r *poolRuntime) handleDescribe(w http.ResponseWriter, req *http.Request, workerID string, requestID string) bool {
+	if _, ok := r.pool.Next(workerID); !ok {
+		return false
+	}
+	var desc describeBody
+	json.NewDecoder(req.Body).Decode(&desc)
+	r.announce(workerID, requestID, desc)
+	w.WriteHeader(202)
+	return true
+}
+
 // handleResponse forwards a pooled worker's response to the stub that asked.
 func (r *poolRuntime) handleResponse(w http.ResponseWriter, req *http.Request, workerID string, requestID string) bool {
+	r.announce(workerID, requestID, describeBody{})
 	inv, ok := r.pool.Complete(workerID, requestID)
 	if !ok {
 		return false
@@ -334,6 +371,7 @@ func (r *poolRuntime) handleResponse(w http.ResponseWriter, req *http.Request, w
 
 // handleError forwards a pooled worker's invocation error to the stub.
 func (r *poolRuntime) handleError(w http.ResponseWriter, req *http.Request, workerID string, requestID string) bool {
+	r.announce(workerID, requestID, describeBody{})
 	inv, ok := r.pool.Complete(workerID, requestID)
 	if !ok {
 		return false

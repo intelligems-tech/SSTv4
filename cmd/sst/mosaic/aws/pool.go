@@ -45,6 +45,8 @@ type pendingInvocation struct {
 	Body      []byte
 	QueuedAt  time.Time
 	StartedAt time.Time
+	// Whether its FunctionInvokedEvent was published (see Announce).
+	announced bool
 }
 
 type pooledSource struct {
@@ -242,6 +244,24 @@ func (p *Pool) Next(workerID string) (chan *pendingInvocation, bool) {
 		return nil, false
 	}
 	return w.next, true
+}
+
+// Announce marks a held request as published. It returns the request only the
+// first time, so the describe callback and the response fallback publish one
+// FunctionInvokedEvent between them.
+func (p *Pool) Announce(workerID string, requestID string) (*pendingInvocation, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	w, ok := p.workers[workerID]
+	if !ok {
+		return nil, false
+	}
+	inv, ok := w.requests[requestID]
+	if !ok || inv.announced {
+		return nil, false
+	}
+	inv.announced = true
+	return inv, true
 }
 
 // Complete records that a worker finished a request. It returns the request

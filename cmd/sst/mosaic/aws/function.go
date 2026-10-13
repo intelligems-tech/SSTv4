@@ -29,6 +29,10 @@ type FunctionInvokedEvent struct {
 	WorkerID   string
 	RequestID  string
 	Input      []byte
+	// Set when a pooled bundle exports `describe(event)`: the handler that
+	// serves the request and a short label for it, e.g. `POST /orgs/{id}`.
+	Handler string `json:",omitempty"`
+	Label   string `json:",omitempty"`
 }
 
 type FunctionResponseEvent struct {
@@ -185,6 +189,13 @@ func function(ctx context.Context, input input) {
 				})
 			}
 		}
+	})
+
+	input.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/invocation/{requestID}/describe`, func(w http.ResponseWriter, r *http.Request) {
+		if poolRT.handleDescribe(w, r, r.PathValue("workerID"), r.PathValue("requestID")) {
+			return
+		}
+		w.WriteHeader(404)
 	})
 
 	input.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/invocation/{requestID}/error`, func(w http.ResponseWriter, r *http.Request) {
@@ -475,39 +486,50 @@ func function(ctx context.Context, input input) {
 
 func fileLogger(p *project.Project) {
 	evts := bus.Subscribe(&FunctionLogEvent{}, &FunctionInvokedEvent{}, &FunctionResponseEvent{}, &FunctionErrorEvent{}, &FunctionBuildEvent{})
-	logs := map[string]*os.File{}
+	writeInvocationLogs(evts, func(functionID string, requestID string) (io.WriteCloser, error) {
+		path := p.PathLog(fmt.Sprintf("lambda/%s/%d-%s", functionID, time.Now().Unix(), requestID))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return nil, err
+		}
+		return os.Create(path)
+	})
+}
 
-	getLog := func(functionID string, requestID string) *os.File {
+// writeInvocationLogs writes one file per invocation: its input, every log
+// line and its response or error. The file is closed when the invocation ends.
+func writeInvocationLogs(evts <-chan interface{}, open func(functionID string, requestID string) (io.WriteCloser, error)) {
+	logs := map[string]io.WriteCloser{}
+	write := func(functionID string, requestID string, text string) {
 		log, ok := logs[requestID]
 		if !ok {
-			path := p.PathLog(fmt.Sprintf("lambda/%s/%d-%s", functionID, time.Now().Unix(), requestID))
-			os.MkdirAll(filepath.Dir(path), 0755)
-			log, _ = os.Create(path)
+			var err error
+			log, err = open(functionID, requestID)
+			if err != nil {
+				return
+			}
 			logs[requestID] = log
 		}
-		return log
+		io.WriteString(log, text)
+	}
+	finish := func(requestID string) {
+		if log, ok := logs[requestID]; ok {
+			log.Close()
+			delete(logs, requestID)
+		}
 	}
 
-	for range evts {
-		for evt := range evts {
-			switch evt := evt.(type) {
-			case *FunctionInvokedEvent:
-				log := getLog(evt.FunctionID, evt.RequestID)
-				log.WriteString("invocation " + evt.RequestID + "\n")
-				log.WriteString(string(evt.Input))
-				log.WriteString("\n")
-			case *FunctionLogEvent:
-				getLog(evt.FunctionID, evt.RequestID).WriteString(evt.Line + "\n")
-			case *FunctionResponseEvent:
-				log := getLog(evt.FunctionID, evt.RequestID)
-				log.WriteString("response " + evt.RequestID + "\n")
-				log.WriteString(string(evt.Output))
-				log.WriteString("\n")
-				delete(logs, evt.RequestID)
-			case *FunctionErrorEvent:
-				getLog(evt.FunctionID, evt.RequestID).WriteString(evt.ErrorType + ": " + evt.ErrorMessage + "\n")
-				delete(logs, evt.RequestID)
-			}
+	for evt := range evts {
+		switch evt := evt.(type) {
+		case *FunctionInvokedEvent:
+			write(evt.FunctionID, evt.RequestID, "invocation "+evt.RequestID+"\n"+string(evt.Input)+"\n")
+		case *FunctionLogEvent:
+			write(evt.FunctionID, evt.RequestID, evt.Line+"\n")
+		case *FunctionResponseEvent:
+			write(evt.FunctionID, evt.RequestID, "response "+evt.RequestID+"\n"+string(evt.Output)+"\n")
+			finish(evt.RequestID)
+		case *FunctionErrorEvent:
+			write(evt.FunctionID, evt.RequestID, evt.ErrorType+": "+evt.ErrorMessage+"\n")
+			finish(evt.RequestID)
 		}
 	}
 }

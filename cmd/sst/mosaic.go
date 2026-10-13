@@ -262,6 +262,20 @@ func CmdMosaic(c *cli.Cli) error {
 		serverURL := fmt.Sprintf("http://localhost:%v", server.Port)
 		_, hasAWS := p.App().Providers["aws"]
 		showWorkers := p.App().Home == "cloudflare" && !hasAWS
+		handlers := newHandlerCatalog()
+		wg.Go(func() error {
+			invoked := bus.Subscribe(&aws.FunctionInvokedEvent{})
+			for {
+				select {
+				case <-c.Context.Done():
+					return nil
+				case evt := <-invoked:
+					if evt, ok := evt.(*aws.FunctionInvokedEvent); ok {
+						handlers.Observe(evt)
+					}
+				}
+			}
+		})
 		fnTitle := "Functions"
 		fnFilter := "function"
 		if showWorkers {
@@ -291,7 +305,7 @@ func CmdMosaic(c *cli.Cli) error {
 			ListOptions: func() []multiplexer.FilterOption {
 				completed, err := dev.Completed(c.Context, serverURL)
 				if err != nil || completed == nil {
-					return nil
+					return handlers.Options()
 				}
 				var options []multiplexer.FilterOption
 				for _, r := range completed.Resources {
@@ -310,7 +324,7 @@ func CmdMosaic(c *cli.Cli) error {
 						})
 					}
 				}
-				return options
+				return append(options, handlers.Options()...)
 			},
 			Env: append(multiEnv, "SST_LOG="+p.PathLog("ui-function")),
 		})
