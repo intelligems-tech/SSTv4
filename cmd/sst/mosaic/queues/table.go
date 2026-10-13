@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -31,6 +32,38 @@ const (
 	colFailed
 	colLast
 )
+
+// Cell colours: activity is green, work in progress cyan, a backlog
+// yellow, failures and dead letters red.
+var (
+	styleActive  = panekit.Success
+	styleFlight  = tcell.StyleDefault.Foreground(tcell.ColorAqua)
+	styleBacklog = panekit.Warning
+	styleFailed  = panekit.Danger.Bold(true)
+	// styleSelected highlights the cursor row without hiding cell colours.
+	styleSelected = tcell.StyleDefault.Background(tcell.NewRGBColor(48, 58, 82))
+)
+
+// backlogStyle is yellow for a few waiting messages and red for a pile.
+func backlogStyle(n int) tcell.Style {
+	if n >= 100 {
+		return styleFailed
+	}
+	return styleBacklog
+}
+
+// recencyStyle is green for activity in the last 30 s, plain for the last
+// five minutes, dim after.
+func recencyStyle(d time.Duration) tcell.Style {
+	switch {
+	case d < 30*time.Second:
+		return styleActive
+	case d < 5*time.Minute:
+		return panekit.Normal
+	default:
+		return panekit.Dim
+	}
+}
 
 func number(n int, warn tcell.Style) (string, tcell.Style) {
 	if n < 0 {
@@ -64,7 +97,12 @@ func (a *App) columns() []column {
 		{title: "Queue", less: func(x, y *Queue) bool { return x.Name < y.Name },
 			cell: func(app *App, q *Queue) (string, tcell.Style) {
 				name := app.displayName(q.Name)
-				if q.IsDLQ() {
+				switch {
+				case q.Stall != nil:
+					return name, styleFailed
+				case q.IsDLQ() && q.Waiting() > 0:
+					return name + " (DLQ)", panekit.Danger
+				case q.IsDLQ():
 					return name + " (DLQ)", panekit.Dim
 				}
 				return name, panekit.Bold
@@ -72,24 +110,24 @@ func (a *App) columns() []column {
 		{title: "Waiting", width: 8, descending: true, less: func(x, y *Queue) bool { return x.Waiting() < y.Waiting() },
 			cell: func(app *App, q *Queue) (string, tcell.Style) {
 				if q.IsDLQ() {
-					return number(q.Waiting(), panekit.Danger)
+					return number(q.Waiting(), styleFailed)
 				}
-				return number(q.Waiting(), panekit.Warning)
+				return number(q.Waiting(), backlogStyle(q.Waiting()))
 			}},
 		{title: "Flight", width: 7, descending: true, less: func(x, y *Queue) bool { return inFlight(x) < inFlight(y) },
-			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(inFlight(q), panekit.Normal) }},
+			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(inFlight(q), styleFlight) }},
 		{title: "DLQ", width: 6, descending: true, less: func(x, y *Queue) bool { return a.dlqWaiting(x) < a.dlqWaiting(y) },
-			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(app.dlqWaiting(q), panekit.Danger) }},
+			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(app.dlqWaiting(q), styleFailed) }},
 		{title: "Recv", width: 6, descending: true, less: func(x, y *Queue) bool { return x.Received < y.Received },
-			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(q.Received, panekit.Normal) }},
+			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(q.Received, styleActive) }},
 		{title: "Failed", width: 7, descending: true, less: func(x, y *Queue) bool { return x.Failed < y.Failed },
-			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(q.Failed, panekit.Danger) }},
+			cell: func(app *App, q *Queue) (string, tcell.Style) { return number(q.Failed, styleFailed) }},
 		{title: "Last", width: 9, descending: true, less: func(x, y *Queue) bool { return x.Last.Before(y.Last) },
 			cell: func(app *App, q *Queue) (string, tcell.Style) {
 				if q.Last.IsZero() {
 					return "–", panekit.Dim
 				}
-				return panekit.Ago(app.now(), q.Last), panekit.Dim
+				return panekit.Ago(app.now(), q.Last), recencyStyle(app.now().Sub(q.Last))
 			}},
 	}
 }
@@ -196,7 +234,7 @@ func (a *App) drawTable(screen tcell.Screen, y int, width int) {
 		q := rows[i]
 		selected := i == a.cursor[viewQueues]
 		if selected {
-			panekit.Fill(screen, y, panekit.Cursor)
+			panekit.Fill(screen, y, styleSelected)
 		}
 		dot, dotStyle := "○", panekit.Dim
 		switch {
@@ -208,18 +246,24 @@ func (a *App) drawTable(screen tcell.Screen, y int, width int) {
 			dot, dotStyle = "●", panekit.Success
 		}
 		if selected {
-			dotStyle = panekit.Cursor
+			dotStyle = withBackground(dotStyle)
 		}
 		panekit.Text(screen, 0, y, dot, dotStyle)
 		for c, col := range columns {
 			text, style := col.cell(a, q)
 			if selected {
-				style = panekit.Cursor
+				style = withBackground(style)
 			}
 			a.cell(screen, xs[c], y, xs[c+1]-xs[c]-1, text, style, c > 0)
 		}
 		y++
 	}
+}
+
+// withBackground puts a cell on the cursor row's background.
+func withBackground(style tcell.Style) tcell.Style {
+	_, background, _ := styleSelected.Decompose()
+	return style.Background(background)
 }
 
 // cell draws text in a column, truncated with an ellipsis, right aligned

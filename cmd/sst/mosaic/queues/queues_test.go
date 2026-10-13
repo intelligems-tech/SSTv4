@@ -120,6 +120,7 @@ func TestListPutsStuckQueuesFirstThenActivity(t *testing.T) {
 }
 
 type harness struct {
+	t      *testing.T
 	app    *App
 	screen tcell.SimulationScreen
 	purged []string
@@ -314,5 +315,58 @@ func TestFilterAndCopyURL(t *testing.T) {
 	h.press('y')
 	if len(h.copied) != 1 || h.copied[0] != "https://sqs/x-idle" {
 		t.Fatalf("y copies the queue URL, got %v", h.copied)
+	}
+}
+
+// styleAt is the style of the first cell of text on the row of name.
+func (h *harness) styleAt(name string, text string) tcell.Style {
+	cells, width, height := h.screen.GetContents()
+	for y := 0; y < height; y++ {
+		line := ""
+		for x := 0; x < width; x++ {
+			if r := cells[y*width+x].Runes; len(r) > 0 {
+				line += string(r[0])
+			} else {
+				line += " "
+			}
+		}
+		if !strings.Contains(line, " "+name+" ") {
+			continue
+		}
+		at := strings.LastIndex(line, text)
+		_, _, style, _ := h.screen.GetContent(len([]rune(line[:at])), y)
+		return style
+	}
+	h.t.Fatalf("no row %q", name)
+	return tcell.StyleDefault
+}
+
+func TestCellsAreColouredByMeaningOnEveryRow(t *testing.T) {
+	h := newHarness(t)
+	h.t = t
+	h.app.SetStage("x")
+	h.app.Apply(deploy())
+	h.app.Apply(depths())
+	h.app.Apply(&aws.FunctionInvokedEvent{RequestID: "r1", Input: batch([]string{"m1"}, 1)})
+	h.app.Apply(&aws.FunctionErrorEvent{RequestID: "r1", ErrorMessage: "boom"})
+	h.press('2')
+
+	fg := func(style tcell.Style) tcell.Color { color, _, _ := style.Decompose(); return color }
+	// jobs.fifo is the cursor row: failed stays red on the highlight.
+	failed := h.styleAt("jobs.fifo", "1")
+	if fg(failed) != tcell.ColorRed {
+		t.Fatalf("failed count must be red, got %v", fg(failed))
+	}
+	if _, bg, _ := failed.Decompose(); bg == tcell.ColorDefault {
+		t.Fatal("the cursor row keeps a highlight background")
+	}
+	if fg(h.styleAt("jobs.fifo", "12")) != tcell.ColorYellow {
+		t.Fatal("a backlog is yellow")
+	}
+	if fg(h.styleAt("jobs.fifo", "4")) != tcell.ColorRed {
+		t.Fatal("dead letters are red")
+	}
+	if fg(h.styleAt("jobs.fifo", "3")) != tcell.ColorAqua {
+		t.Fatal("in-flight messages are cyan")
 	}
 }
