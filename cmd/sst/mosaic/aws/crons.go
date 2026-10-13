@@ -38,12 +38,9 @@ type CronResource struct {
 	Name     string
 	Schedule string
 	Enabled  bool
-	// RuleArn is the rule or schedule, named in the scheduled event.
+	// RuleArn is the rule or schedule.
 	RuleArn   string
 	TargetArn string
-	// Input is the target's fixed payload; empty means AWS sends the
-	// scheduled event itself.
-	Input string
 }
 
 // Region is the region of the target function.
@@ -59,28 +56,9 @@ func (c CronResource) FunctionName() string {
 	return c.TargetArn
 }
 
-// Payload is the event AWS would send on schedule: the target's input, or
-// a scheduled event for the rule.
-func (c CronResource) Payload(now time.Time, id string) []byte {
-	if c.Input != "" {
-		return []byte(c.Input)
-	}
-	if strings.HasPrefix(c.Key, "schedule/") {
-		return []byte("{}")
-	}
-	payload, _ := json.Marshal(map[string]interface{}{
-		"version":     "0",
-		"id":          id,
-		"detail-type": "Scheduled Event",
-		"source":      "aws.events",
-		"account":     arnPart(c.RuleArn, 4),
-		"time":        now.UTC().Format(time.RFC3339),
-		"region":      arnPart(c.RuleArn, 3),
-		"resources":   []string{c.RuleArn},
-		"detail":      map[string]interface{}{},
-	})
-	return payload
-}
+// TestPayload is what a manual run sends: an empty event, as the Lambda
+// console's Test button does, rather than the scheduled payload.
+const TestPayload = "{}"
 
 func arnPart(arn string, index int) string {
 	parts := strings.Split(arn, ":")
@@ -113,7 +91,7 @@ func CronsFromComplete(evt *project.CompleteEvent) []CronResource {
 	}
 	rules := map[string]rule{}
 	type target struct {
-		rule, id, arn, input string
+		rule, id, arn string
 	}
 	targets := []target{}
 	crons := []CronResource{}
@@ -128,7 +106,7 @@ func CronsFromComplete(evt *project.CompleteEvent) []CronResource {
 			rules[stringOutput(outputs, "name")] = rule{arn: stringOutput(outputs, "arn"), schedule: schedule, enabled: enabledOutput(outputs)}
 		case eventTargetResourceType:
 			if arn := stringOutput(outputs, "arn"); isLambdaArn(arn) {
-				targets = append(targets, target{rule: stringOutput(outputs, "rule"), id: stringOutput(outputs, "targetId"), arn: arn, input: stringOutput(outputs, "input")})
+				targets = append(targets, target{rule: stringOutput(outputs, "rule"), id: stringOutput(outputs, "targetId"), arn: arn})
 			}
 		case scheduleResourceType:
 			destination, _ := outputs["target"].(map[string]interface{})
@@ -148,7 +126,6 @@ func CronsFromComplete(evt *project.CompleteEvent) []CronResource {
 				Enabled:   enabledOutput(outputs),
 				RuleArn:   stringOutput(outputs, "arn"),
 				TargetArn: arn,
-				Input:     stringOutput(destination, "input"),
 			})
 		}
 	}
@@ -172,7 +149,6 @@ func CronsFromComplete(evt *project.CompleteEvent) []CronResource {
 			Enabled:   r.enabled,
 			RuleArn:   r.arn,
 			TargetArn: t.arn,
-			Input:     t.input,
 		})
 	}
 	sort.Slice(crons, func(i, j int) bool { return crons[i].Name < crons[j].Name })
@@ -242,7 +218,7 @@ func (r *cronRunner) deployed(crons []CronResource) {
 	}
 }
 
-// Run invokes a cron's function with its scheduled payload and publishes
+// Run invokes a cron's function with TestPayload and publishes
 // the start and the outcome. It returns once the function answers.
 func (r *cronRunner) Run(ctx context.Context, key string) error {
 	r.mu.Lock()
@@ -253,7 +229,7 @@ func (r *cronRunner) Run(ctx context.Context, key string) error {
 	}
 	runID := newRunID()
 	started := r.now()
-	payload := cron.Payload(started, runID)
+	payload := []byte(TestPayload)
 	bus.Publish(&CronRunStartedEvent{Key: key, RunID: runID, At: started, Payload: string(payload)})
 	requestID, functionError, output, err := r.invoke(ctx, cron, payload)
 	evt := &CronRunEvent{Key: key, RunID: runID, RequestID: requestID, Duration: r.now().Sub(started), FunctionError: functionError}
@@ -269,7 +245,7 @@ func (r *cronRunner) Run(ctx context.Context, key string) error {
 	return nil
 }
 
-// newRunID is a random UUID, used as the scheduled event's id.
+// newRunID is a random UUID that ties a run's start to its outcome.
 func newRunID() string {
 	b := make([]byte, 16)
 	rand.Read(b)

@@ -280,13 +280,13 @@ func (a *App) selectedRun() *Execution {
 	return recent[min(a.cursor[viewRuns], len(recent)-1)]
 }
 
-// copySelection copies the cron's payload, or the selected run's response.
+// copySelection copies the cron's target ARN, or the selected run's response.
 func (a *App) copySelection() {
 	var text, what string
 	if run := a.selectedRun(); a.view == viewRuns && run != nil {
 		text, what = prettyBody(run.Output), "response"
 	} else if c := a.selected(); c != nil {
-		text, what = prettyBody(string(c.Payload(a.now(), "<id>"))), "payload"
+		text, what = c.TargetArn, "target ARN"
 	} else {
 		return
 	}
@@ -468,11 +468,7 @@ func (a *App) drawRuns(screen tcell.Screen, y int) {
 	}
 	panekit.Text(screen, x+2, y, "→ "+c.TargetArn, panekit.Dim)
 	y++
-	payload := "payload: " + strings.Join(strings.Fields(string(c.Payload(a.now(), "<id>"))), " ")
-	if c.Input == "" && strings.HasPrefix(c.Key, "rule/") {
-		payload = "payload: the scheduled event for the rule"
-	}
-	panekit.Text(screen, 0, y, payload, panekit.Dim)
+	panekit.Text(screen, 0, y, "r sends the test event "+aws.TestPayload+", not the scheduled payload", panekit.Dim)
 	y += 2
 	a.bodyTop = y
 	recent := c.Recent()
@@ -537,7 +533,7 @@ func (a *App) drawFooter(screen tcell.Screen, y int) {
 	case a.editing:
 		hints = []string{"enter apply", "esc clear"}
 	case a.view == viewCrons:
-		hints = []string{"j/k move", "r run now", "enter runs", "/ filter", "y copy payload"}
+		hints = []string{"j/k move", "r run now", "enter runs", "/ filter", "y copy ARN"}
 	default:
 		hints = []string{"j/k move", "r run now", "enter expand", "y copy response", "esc back"}
 	}

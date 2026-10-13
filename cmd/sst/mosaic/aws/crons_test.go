@@ -2,10 +2,8 @@ package aws
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/pulumi/pulumi/sdk/v3/go/common/apitype"
 	"github.com/sst/sst/v3/pkg/bus"
@@ -20,7 +18,7 @@ const (
 func cronDeploy() *project.CompleteEvent {
 	return &project.CompleteEvent{Finished: true, Resources: []apitype.ResourceV3{
 		{Type: eventRuleResourceType, Outputs: map[string]interface{}{"name": "x-nightly", "arn": nightlyRuleArn, "scheduleExpression": "cron(0 3 * * ? *)", "state": "ENABLED"}},
-		{Type: eventTargetResourceType, Outputs: map[string]interface{}{"rule": "x-nightly", "targetId": "Target0", "arn": nightlyFnArn}},
+		{Type: eventTargetResourceType, Outputs: map[string]interface{}{"rule": "x-nightly", "targetId": "Target0", "arn": nightlyFnArn, "input": `{"job":"nightly"}`}},
 		{Type: eventRuleResourceType, Outputs: map[string]interface{}{"name": "x-fanout", "arn": "arn:aws:events:us-east-1:123:rule/x-fanout", "scheduleExpression": "rate(5 minutes)", "state": "DISABLED"}},
 		{Type: eventTargetResourceType, Outputs: map[string]interface{}{"rule": "x-fanout", "targetId": "a", "arn": "arn:aws:lambda:us-east-1:123:function:x-a", "input": `{"job":"a"}`}},
 		{Type: eventTargetResourceType, Outputs: map[string]interface{}{"rule": "x-fanout", "targetId": "b", "arn": "arn:aws:lambda:us-east-1:123:function:x-b"}},
@@ -50,35 +48,14 @@ func TestCronsFromCompleteListsScheduledLambdaTargets(t *testing.T) {
 		}
 	}
 	a, hourly, nightly := crons[0], crons[2], crons[3]
-	if a.Enabled || a.Input != `{"job":"a"}` || a.Key != "rule/x-fanout/a" {
+	if a.Enabled || a.Key != "rule/x-fanout/a" {
 		t.Fatalf("unexpected %+v", a)
 	}
-	if !hourly.Enabled || hourly.Key != "schedule/default/x-hourly" || hourly.Input != `{"hour":true}` {
+	if !hourly.Enabled || hourly.Key != "schedule/default/x-hourly" {
 		t.Fatalf("unexpected %+v", hourly)
 	}
 	if nightly.FunctionName() != "x-pool:live" || nightly.Region() != "us-east-1" || nightly.Schedule != "cron(0 3 * * ? *)" {
 		t.Fatalf("unexpected %+v", nightly)
-	}
-}
-
-func TestCronPayloadMatchesWhatAWSSends(t *testing.T) {
-	crons := CronsFromComplete(cronDeploy())
-	now := time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)
-	if got := string(crons[0].Payload(now, "id")); got != `{"job":"a"}` {
-		t.Fatalf("a target's input is sent verbatim, got %s", got)
-	}
-	if got := string(crons[2].Payload(now, "id")); got != `{"hour":true}` {
-		t.Fatalf("a schedule's input is sent verbatim, got %s", got)
-	}
-	var event map[string]interface{}
-	if err := json.Unmarshal(crons[3].Payload(now, "id-1"), &event); err != nil {
-		t.Fatal(err)
-	}
-	resources, _ := event["resources"].([]interface{})
-	if event["detail-type"] != "Scheduled Event" || event["source"] != "aws.events" || event["id"] != "id-1" ||
-		event["account"] != "123" || event["region"] != "us-east-1" || event["time"] != "2026-10-12T03:00:00Z" ||
-		len(resources) != 1 || resources[0] != nightlyRuleArn {
-		t.Fatalf("a rule without input sends the scheduled event, got %v", event)
 	}
 }
 
@@ -102,8 +79,8 @@ func TestCronRunnerInvokesTheTargetAndPublishesTheOutcome(t *testing.T) {
 	}
 	started := (<-evts).(*CronRunStartedEvent)
 	done := (<-evts).(*CronRunEvent)
-	if started.Payload != string(sent) || started.RunID != done.RunID {
-		t.Fatalf("the start carries the payload sent: %+v / %+v", started, done)
+	if string(sent) != "{}" || started.Payload != "{}" || started.RunID != done.RunID {
+		t.Fatalf("a run sends the empty test event, even to a target with input: %s / %+v / %+v", sent, started, done)
 	}
 	if done.RequestID != "req-1" || done.FunctionError != "Unhandled" || done.Output != `{"errorMessage":"boom"}` || done.Error != "" {
 		t.Fatalf("unexpected outcome %+v", done)
