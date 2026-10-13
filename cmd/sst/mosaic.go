@@ -319,6 +319,7 @@ func CmdMosaic(c *cli.Cli) error {
 			Env: append(multiEnv, "SST_LOG="+p.PathLog("ui-function")),
 		})
 		multi.AddProcess(invocationsPane(currentExecutable, multiEnv, p.PathLog("ui-invocations")))
+		multi.AddProcess(queuesPane(currentExecutable, multiEnv, p.PathLog("ui-queues")))
 		defer func() {
 			multi.Exit()
 		}()

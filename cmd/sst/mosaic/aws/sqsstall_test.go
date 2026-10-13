@@ -77,7 +77,7 @@ func (h *stallHarness) stalls() []QueueStall {
 }
 
 func TestExtractSqsRecordsParsesEveryRecord(t *testing.T) {
-	records := extractSqsRecords(sqsBatch(stallArn, []string{"m1", "m2", "m3"}, 4, "org-1"))
+	records := ExtractSqsRecords(sqsBatch(stallArn, []string{"m1", "m2", "m3"}, 4, "org-1"))
 	if len(records) != 3 || records[1].MessageID != "m2" {
 		t.Fatalf("every message of a batch must be parsed, got %+v", records)
 	}
@@ -89,7 +89,7 @@ func TestExtractSqsRecordsParsesEveryRecord(t *testing.T) {
 
 func TestExtractSqsRecordsIgnoresOtherInputs(t *testing.T) {
 	for _, input := range []string{`{"rawPath":"/x","headers":{}}`, `{"ding":true}`, `null`, `{"Records":[{"eventSource":"aws:s3"}]}`, `not json`} {
-		if records := extractSqsRecords([]byte(input)); len(records) != 0 {
+		if records := ExtractSqsRecords([]byte(input)); len(records) != 0 {
 			t.Fatalf("%s parsed as %+v", input, records)
 		}
 	}
@@ -97,7 +97,7 @@ func TestExtractSqsRecordsIgnoresOtherInputs(t *testing.T) {
 
 func TestExtractSqsRecordsDefaultsAMissingReceiveCountToOne(t *testing.T) {
 	input := `{"Records":[{"messageId":"m","eventSource":"aws:sqs","eventSourceARN":"` + stallArn + `"}]}`
-	if records := extractSqsRecords([]byte(input)); records[0].ReceiveCount != 1 {
+	if records := ExtractSqsRecords([]byte(input)); records[0].ReceiveCount != 1 {
 		t.Fatalf("got %+v", records)
 	}
 }

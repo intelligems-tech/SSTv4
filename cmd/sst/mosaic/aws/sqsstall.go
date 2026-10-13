@@ -66,17 +66,19 @@ type sqsRecord struct {
 	MessageID      string
 	MessageGroupID string
 	ReceiveCount   int
+	Body           string
 }
 
-// extractSqsRecords parses every SQS record of a Lambda input. It is empty
+// ExtractSqsRecords parses every SQS record of a Lambda input. It is empty
 // for any input that is not an SQS event.
-func extractSqsRecords(input []byte) []sqsRecord {
+func ExtractSqsRecords(input []byte) []sqsRecord {
 	var event struct {
 		Records []struct {
 			EventSource    string `json:"eventSource"`
 			EventSourceARN string `json:"eventSourceARN"`
 			MessageID      string `json:"messageId"`
 			AwsRegion      string `json:"awsRegion"`
+			Body           string `json:"body"`
 			Attributes     struct {
 				ApproximateReceiveCount string `json:"ApproximateReceiveCount"`
 				MessageGroupID          string `json:"MessageGroupId"`
@@ -113,14 +115,15 @@ func extractSqsRecords(input []byte) []sqsRecord {
 			MessageID:      r.MessageID,
 			MessageGroupID: r.Attributes.MessageGroupID,
 			ReceiveCount:   count,
+			Body:           r.Body,
 		})
 	}
 	return records
 }
 
-// batchItemFailureIDs returns the message ids a partial-batch response
+// BatchItemFailureIDs returns the message ids a partial-batch response
 // reported as failed, or nil when the output is not one.
-func batchItemFailureIDs(output []byte) map[string]bool {
+func BatchItemFailureIDs(output []byte) map[string]bool {
 	var response struct {
 		BatchItemFailures *[]struct {
 			ItemIdentifier string `json:"itemIdentifier"`
@@ -187,7 +190,7 @@ func trackKey(queueName string, messageID string) string {
 
 // Observe feeds one invocation state through the tracker.
 func (t *QueueStallTracker) Observe(o stallObservation) {
-	records := extractSqsRecords(o.Input)
+	records := ExtractSqsRecords(o.Input)
 	if len(records) == 0 {
 		return
 	}
@@ -195,7 +198,7 @@ func (t *QueueStallTracker) Observe(o stallObservation) {
 	// outcome applies to every record (SQS redelivers the whole batch).
 	var failedIDs map[string]bool
 	if o.Status == invocationSucceeded {
-		failedIDs = batchItemFailureIDs(o.Output)
+		failedIDs = BatchItemFailureIDs(o.Output)
 	}
 	if o.At.After(t.lastEvent) {
 		t.lastEvent = o.At

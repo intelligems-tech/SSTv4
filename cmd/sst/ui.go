@@ -21,6 +21,9 @@ func CmdUI(c *cli.Cli) error {
 	if c.String("filter") == invocationsFilter {
 		return CmdInvocations(c)
 	}
+	if c.String("filter") == queuesFilter {
+		return CmdQueues(c)
+	}
 	url, err := server.Discover("", "")
 	if err != nil {
 		return err

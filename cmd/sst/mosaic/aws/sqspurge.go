@@ -168,7 +168,7 @@ func newStallWatcher(now func() time.Time) *stallWatcher {
 func (s *stallWatcher) handle(evt interface{}) (bool, []QueueStall) {
 	switch evt := evt.(type) {
 	case *FunctionInvokedEvent:
-		if len(extractSqsRecords(evt.Input)) == 0 {
+		if len(ExtractSqsRecords(evt.Input)) == 0 {
 			return false, nil
 		}
 		obs := stallObservation{RequestID: evt.RequestID, FunctionID: evt.FunctionID, Input: evt.Input, Status: invocationRunning, At: s.now()}
@@ -223,10 +223,11 @@ func (s *stallWatcher) diff() (bool, []QueueStall) {
 	return changed, fresh
 }
 
-// startQueueStalls wires stall detection and the purge endpoint into the dev
-// server.
-func startQueueStalls(ctx context.Context, config aws.Config, s *server.Server) {
+// startQueues wires stall detection, the purge endpoint and queue depth
+// polling into the dev server.
+func startQueues(ctx context.Context, config aws.Config, s *server.Server) {
 	purger := newQueuePurger(sqsPurge(config))
 	s.Mux.HandleFunc("/api/sqs/purge", handlePurge(ctx, purger))
 	go watchQueueStalls(ctx, purger)
+	go watchQueueDepths(ctx, sqsDepth(config))
 }
