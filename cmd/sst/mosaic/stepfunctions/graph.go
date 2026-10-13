@@ -50,11 +50,14 @@ var Zooms = []Zoom{
 const DefaultZoom = 2
 
 type Node struct {
-	Kind  NodeKind
+	Kind NodeKind
+	// State is the node's state, or the Parallel or Map a join closes.
 	State *aws.State
 	Label string
 	Layer int
 	Order int
+	// origin is the link a dummy carries.
+	origin int
 	X, Y  int
 	W     int
 }
@@ -72,13 +75,18 @@ func (n *Node) Box() bool {
 type edge struct {
 	from, to int
 	back     bool
+	// origin is the link a drawn segment belongs to.
+	origin int
 }
 
 // Graph is a laid-out state machine, drawn top to bottom like the console's
 // graph view. Loops are drawn up the right side.
 type Graph struct {
 	Zoom   Zoom
-	Nodes  []*Node
+	Nodes []*Node
+	// links are the transitions between states; edges are the segments
+	// drawn for them.
+	links  []edge
 	edges  []edge
 	layers [][]int
 	byName map[string]int
@@ -147,7 +155,7 @@ func (g *Graph) machine(m *aws.Machine, exit int) int {
 		from := g.byName[name]
 		after := from
 		if children := state.Children(); len(children) > 0 {
-			after = g.add(&Node{Kind: KindJoin})
+			after = g.add(&Node{Kind: KindJoin, State: state})
 			for _, child := range children {
 				if entry := g.machine(child, after); entry >= 0 {
 					g.link(from, entry)
@@ -281,8 +289,10 @@ func (g *Graph) layer(end int) {
 // splitLongEdges routes an edge that skips layers through dummy nodes, one
 // per layer it crosses.
 func (g *Graph) splitLongEdges() {
+	g.links = g.edges
 	edges := []edge{}
-	for _, e := range g.edges {
+	for i, e := range g.links {
+		e.origin = i
 		from, to := g.Nodes[e.from], g.Nodes[e.to]
 		if e.back || to.Layer-from.Layer <= 1 {
 			edges = append(edges, e)
@@ -290,13 +300,52 @@ func (g *Graph) splitLongEdges() {
 		}
 		previous := e.from
 		for layer := from.Layer + 1; layer < to.Layer; layer++ {
-			dummy := g.add(&Node{Kind: KindDummy, Layer: layer})
-			edges = append(edges, edge{from: previous, to: dummy})
+			dummy := g.add(&Node{Kind: KindDummy, Layer: layer, origin: i})
+			edges = append(edges, edge{from: previous, to: dummy, origin: i})
 			previous = dummy
 		}
-		edges = append(edges, edge{from: previous, to: e.to})
+		edges = append(edges, edge{from: previous, to: e.to, origin: i})
 	}
 	g.edges = edges
+}
+
+// Path is a set of links, by index, to draw highlighted.
+type Path map[int]bool
+
+// PathTo is every route from Start into target: the links that lead to it,
+// back through loops. With reached, a link counts only when both its ends
+// were reached, which narrows the routes to those an execution took.
+func (g *Graph) PathTo(target *Node, reached func(n *Node) bool) Path {
+	path := Path{}
+	index := -1
+	for i, n := range g.Nodes {
+		if n == target {
+			index = i
+		}
+	}
+	if index < 0 {
+		return path
+	}
+	seen := map[int]bool{index: true}
+	queue := []int{index}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		for i, link := range g.links {
+			if link.to != n || path[i] {
+				continue
+			}
+			if reached != nil && !(reached(g.Nodes[link.from]) && reached(g.Nodes[link.to])) {
+				continue
+			}
+			path[i] = true
+			if !seen[link.from] {
+				seen[link.from] = true
+				queue = append(queue, link.from)
+			}
+		}
+	}
+	return path
 }
 
 // order orders each layer by the barycenter of its neighbours, sweeping
@@ -598,59 +647,89 @@ func (c *Canvas) hline(y int, x0 int, x1 int, style tcell.Style) {
 // Styler colours a node; selected is the cursor's node.
 type Styler func(n *Node, selected bool) tcell.Style
 
-// Draw renders the graph.
-func (g *Graph) Draw(styleFor Styler, selected *Node, edgeStyle tcell.Style) *Canvas {
+// Draw renders the graph, with the links on path in pathStyle.
+func (g *Graph) Draw(styleFor Styler, selected *Node, edgeStyle tcell.Style, path Path, pathStyle tcell.Style) *Canvas {
 	c := newCanvas(g.Width, g.Height)
 	boxHeight := g.Zoom.BoxHeight
-	for _, e := range g.edges {
-		if e.back {
-			continue
+	styleOf := func(e edge) tcell.Style {
+		if path[e.origin] {
+			return pathStyle
 		}
-		from, to := g.Nodes[e.from], g.Nodes[e.to]
-		bottom := from.Y + boxHeight - 1
-		channel := bottom + g.Zoom.Pitch - boxHeight - 1
-		c.vline(from.Center(), bottom, channel, edgeStyle)
-		c.hline(channel, from.Center(), to.Center(), edgeStyle)
-		c.vline(to.Center(), channel, to.Y, edgeStyle)
+		return edgeStyle
 	}
+	lanes := map[int]int{}
 	lane := g.Width - laneGap
-	for _, e := range g.backEdges() {
-		from, to := g.Nodes[e.from], g.Nodes[e.to]
-		fromRow, toRow := from.Y+boxHeight/2, to.Y+boxHeight/2
-		if g.blockedRight(from) {
-			// Leave from below so the line does not run through a neighbour.
-			fromRow = from.Y + boxHeight
-			c.vline(from.Center(), from.Y+boxHeight-1, fromRow, edgeStyle)
-			c.hline(fromRow, from.Center(), lane, edgeStyle)
-		} else {
-			c.hline(fromRow, from.X+from.W, lane, edgeStyle)
+	for i, e := range g.edges {
+		if e.back {
+			lanes[i] = lane
+			lane -= laneGap
 		}
-		c.vline(lane, fromRow, toRow, edgeStyle)
-		c.hline(toRow, to.X+to.W, lane, edgeStyle)
-		c.put(to.X+to.W, toRow, '◀', edgeStyle)
-		lane -= laneGap
+	}
+	// Plain edges first, so a highlighted one wins the cells they share.
+	for _, highlighted := range []bool{false, true} {
+		for i, e := range g.edges {
+			if path[e.origin] != highlighted {
+				continue
+			}
+			from, to := g.Nodes[e.from], g.Nodes[e.to]
+			style := styleOf(e)
+			if !e.back {
+				bottom := from.Y + boxHeight - 1
+				channel := bottom + g.Zoom.Pitch - boxHeight - 1
+				c.vline(from.Center(), bottom, channel, style)
+				c.hline(channel, from.Center(), to.Center(), style)
+				c.vline(to.Center(), channel, to.Y, style)
+				continue
+			}
+			lane := lanes[i]
+			fromRow, toRow := from.Y+boxHeight/2, to.Y+boxHeight/2
+			if g.blockedRight(from) {
+				// Leave from below so the line does not run through a neighbour.
+				fromRow = from.Y + boxHeight
+				c.vline(from.Center(), from.Y+boxHeight-1, fromRow, style)
+				c.hline(fromRow, from.Center(), lane, style)
+			} else {
+				c.hline(fromRow, from.X+from.W, lane, style)
+			}
+			c.vline(lane, fromRow, toRow, style)
+			c.hline(toRow, to.X+to.W, lane, style)
+		}
 	}
 	for _, n := range g.Nodes {
 		switch {
 		case n.Box():
 			g.drawBox(c, n, styleFor(n, n == selected))
+		case n.Kind == KindDummy:
+			c.vline(n.Center(), n.Y, n.Y+boxHeight-1, styleOf(edge{origin: n.origin}))
 		default:
-			c.vline(n.Center(), n.Y, n.Y+boxHeight-1, edgeStyle)
+			style := edgeStyle
+			for _, e := range g.edges {
+				if (g.Nodes[e.to] == n || g.Nodes[e.from] == n) && path[e.origin] {
+					style = pathStyle
+				}
+			}
+			c.vline(n.Center(), n.Y, n.Y+boxHeight-1, style)
 		}
 	}
-	for _, e := range g.edges {
-		from, to := g.Nodes[e.from], g.Nodes[e.to]
-		if e.back {
-			if from.Box() && boxHeight > 1 && g.blockedRight(from) {
+	for _, highlighted := range []bool{false, true} {
+		for _, e := range g.edges {
+			if path[e.origin] != highlighted {
+				continue
+			}
+			from, to := g.Nodes[e.from], g.Nodes[e.to]
+			if e.back {
+				if from.Box() && boxHeight > 1 && g.blockedRight(from) {
+					c.put(from.Center(), from.Y+boxHeight-1, '┬', styleFor(from, from == selected))
+				}
+				c.put(to.X+to.W, to.Y+boxHeight/2, '◀', styleOf(e))
+				continue
+			}
+			if from.Box() && boxHeight > 1 {
 				c.put(from.Center(), from.Y+boxHeight-1, '┬', styleFor(from, from == selected))
 			}
-			continue
-		}
-		if from.Box() && boxHeight > 1 {
-			c.put(from.Center(), from.Y+boxHeight-1, '┬', styleFor(from, from == selected))
-		}
-		if to.Box() {
-			c.put(to.Center(), to.Y-1, '▼', edgeStyle)
+			if to.Box() {
+				c.put(to.Center(), to.Y-1, '▼', styleOf(e))
+			}
 		}
 	}
 	return c

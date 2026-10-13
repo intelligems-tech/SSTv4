@@ -47,6 +47,8 @@ var (
 	styleRunning = tcell.StyleDefault.Foreground(tcell.ColorAqua)
 	styleCaught  = tcell.StyleDefault.Foreground(tcell.ColorOrange)
 	styleFailed  = panekit.Danger.Bold(true)
+	// stylePath draws the routes into the selected state.
+	stylePath = tcell.StyleDefault.Foreground(tcell.NewRGBColor(199, 146, 234)).Bold(true)
 	// styleSelected highlights the cursor row without hiding cell colours.
 	styleSelected = tcell.StyleDefault.Background(tcell.NewRGBColor(48, 58, 82))
 )
@@ -834,6 +836,7 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 	y += 2
 
 	selected := a.selectedNode(m)
+	path, asRun := a.pathTo(g, selected, execution)
 	canvas := g.Draw(func(n *Node, isSelected bool) tcell.Style {
 		style := panekit.Normal
 		switch {
@@ -846,7 +849,7 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 			style = withBackground(style).Bold(true)
 		}
 		return style
-	}, selected, panekit.Dim)
+	}, selected, panekit.Dim, path, stylePath)
 
 	viewW, viewH := width, max(1, height-2-y)
 	a.viewW, a.viewH = viewW, viewH
@@ -863,8 +866,33 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 		}
 	}
 	if selected != nil {
-		a.drawNodeInfo(screen, height-2, m, selected)
+		x := a.drawNodeInfo(screen, height-2, m, selected)
+		note := "  ┃ every route here"
+		if asRun {
+			note = "  ┃ path as run"
+		}
+		panekit.Text(screen, x, height-2, note, stylePath)
 	}
+}
+
+// pathTo is the routes into the selected state: the transitions the shown
+// execution took to reach it, or every route when it did not reach it.
+func (a *App) pathTo(g *Graph, selected *Node, execution *aws.StepFunctionExecution) (Path, bool) {
+	if selected == nil {
+		return nil, false
+	}
+	if execution == nil || StateStatus(execution, selected.State.Name) == "" {
+		return g.PathTo(selected, nil), false
+	}
+	return g.PathTo(selected, func(n *Node) bool {
+		switch n.Kind {
+		case KindState, KindJoin:
+			return StateStatus(execution, n.State.Name) != ""
+		case KindEnd:
+			return !execution.Running()
+		}
+		return true
+	}), true
 }
 
 // fit clamps a scroll offset, follows the selection when asked, and centres
@@ -892,7 +920,7 @@ func (a *App) fit(scroll int, size int, view int, selected *Node, boxHeight int,
 	return min(max(0, scroll), size-view), 0
 }
 
-func (a *App) drawNodeInfo(screen tcell.Screen, y int, m *Machine, n *Node) {
+func (a *App) drawNodeInfo(screen tcell.Screen, y int, m *Machine, n *Node) int {
 	state := n.State
 	x := panekit.Text(screen, 0, y, typeGlyph(state)+" "+state.Type, panekit.Bold)
 	if state.Function != "" {
@@ -910,8 +938,9 @@ func (a *App) drawNodeInfo(screen tcell.Screen, y int, m *Machine, n *Node) {
 		last := visits[0]
 		x = panekit.Text(screen, x, y, " · last ", panekit.Dim)
 		x = panekit.Text(screen, x, y, last.Status, visitStyle(last.Status))
-		panekit.Text(screen, x, y, " "+panekit.Ago(a.now(), last.Entered), panekit.Dim)
+		x = panekit.Text(screen, x, y, " "+panekit.Ago(a.now(), last.Entered), panekit.Dim)
 	}
+	return x
 }
 
 // functionName shortens a function ARN to its name and qualifier.

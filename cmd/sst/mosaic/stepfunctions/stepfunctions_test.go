@@ -113,7 +113,7 @@ func TestGraphLaysOutEveryStateWithoutOverlap(t *testing.T) {
 			}
 		}
 	}
-	text := g.Draw(func(*Node, bool) tcell.Style { return tcell.StyleDefault }, nil, tcell.StyleDefault).String()
+	text := g.Draw(func(*Node, bool) tcell.Style { return tcell.StyleDefault }, nil, tcell.StyleDefault, nil, tcell.StyleDefault).String()
 	for _, want := range []string{"Start", "λ Validate", "◇ Route", "‖ Fan out", "✓ Done", "◀", "▼"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in\n%s", want, text)
@@ -250,7 +250,7 @@ func TestZoomChangesDensityAndKeepsEveryLevelDrawable(t *testing.T) {
 	previous := (*Graph)(nil)
 	for _, zoom := range Zooms {
 		g := NewGraph(m, zoom)
-		text := g.Draw(func(*Node, bool) tcell.Style { return tcell.StyleDefault }, nil, tcell.StyleDefault).String()
+		text := g.Draw(func(*Node, bool) tcell.Style { return tcell.StyleDefault }, nil, tcell.StyleDefault, nil, tcell.StyleDefault).String()
 		if !strings.Contains(text, "Validate") || !strings.Contains(text, "▼") || !strings.Contains(text, "◀") {
 			t.Fatalf("%s zoom draws states, edges and loops\n%s", zoom.Name, text)
 		}
@@ -283,5 +283,82 @@ func TestZoomChangesDensityAndKeepsEveryLevelDrawable(t *testing.T) {
 	app.HandleKey(key('0'))
 	if app.zoom != 0 {
 		t.Fatalf("0 falls back to the overview on a small screen, got %d", app.zoom)
+	}
+}
+
+// linkNames names a path's links "From→To", joins as "From⋯".
+func linkNames(g *Graph, path Path) map[string]bool {
+	name := func(n *Node) string {
+		switch n.Kind {
+		case KindStart:
+			return "Start"
+		case KindEnd:
+			return "End"
+		case KindJoin:
+			return n.State.Name + "⋯"
+		}
+		return n.State.Name
+	}
+	result := map[string]bool{}
+	for i := range path {
+		result[name(g.Nodes[g.links[i].from])+"→"+name(g.Nodes[g.links[i].to])] = true
+	}
+	return result
+}
+
+func TestPathToFollowsEveryRouteOrOnlyTheOneRun(t *testing.T) {
+	m, _ := aws.ParseDefinition(definition)
+	g := NewGraph(m, Zooms[DefaultZoom])
+	every := linkNames(g, g.PathTo(g.Node("Charge"), nil))
+	for _, want := range []string{"Start→Validate", "Validate→Route", "Route→Fan out", "Fan out→Charge", "Route→Wait a bit", "Wait a bit→Validate"} {
+		if !every[want] {
+			t.Fatalf("every route into Charge includes %s, got %v", want, every)
+		}
+	}
+	if every["Validate→Give up"] || every["Fan out→Email"] {
+		t.Fatalf("links that do not lead to Charge are left out, got %v", every)
+	}
+
+	execution := executions(time.Unix(0, 0)).Executions[0]
+	run := linkNames(g, g.PathTo(g.Node("Charge"), func(n *Node) bool {
+		return n.Kind == KindStart || n.Kind != KindEnd && n.State != nil && StateStatus(&execution, n.State.Name) != ""
+	}))
+	if !run["Start→Validate"] || !run["Route→Fan out"] || !run["Fan out→Charge"] || run["Route→Wait a bit"] || run["Wait a bit→Validate"] {
+		t.Fatalf("the run's path skips the loop it never took, got %v", run)
+	}
+}
+
+func TestSelectingAStateColoursThePathThatReachedIt(t *testing.T) {
+	app, _, c := newTestApp()
+	app.Apply(deploy())
+	app.HandleKey(special(tcell.KeyEnter))
+	app.Apply(executions(c.now()))
+	app.state = "Charge"
+	screen, text := draw(app, 160, 60)
+	if !strings.Contains(text, "path as run") {
+		t.Fatalf("the info line says which path shows\n%s", text)
+	}
+	g := app.store.Machine(machineArn).Graph(app.zoom)
+	arrowColour := func(name string) tcell.Color {
+		n := g.Node(name)
+		r, _, style, _ := screen.GetContent(app.originX+n.Center()-app.scrollX, app.originY+n.Y-1-app.scrollY)
+		if r != '▼' {
+			t.Fatalf("no arrow above %s, got %q", name, r)
+		}
+		fg, _, _ := style.Decompose()
+		return fg
+	}
+	pathColour, _, _ := stylePath.Decompose()
+	if arrowColour("Charge") != pathColour || arrowColour("Fan out") != pathColour {
+		t.Fatal("the transitions into Charge are highlighted")
+	}
+	if arrowColour("Give up") == pathColour || arrowColour("Email") == pathColour {
+		t.Fatal("other transitions are not")
+	}
+
+	app.state = "Give up"
+	_, text = draw(app, 160, 60)
+	if !strings.Contains(text, "every route here") {
+		t.Fatalf("a state the run never reached shows every route into it\n%s", text)
 	}
 }
