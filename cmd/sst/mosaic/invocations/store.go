@@ -147,10 +147,11 @@ func (s *Store) Apply(evt interface{}) bool {
 func (s *Store) invoked(evt *aws.FunctionInvokedEvent) {
 	key, title, subtitle := evt.FunctionID, s.functionTitle(evt.FunctionID), evt.FunctionID
 	if evt.Handler != "" {
-		key, title = "handler:"+evt.Handler, evt.Handler
-		subtitle = evt.Label
-		if subtitle == evt.Handler {
-			subtitle = ""
+		// The label (a route like `GET /orders`) leads; the handler key that
+		// serves it follows, unless they are the same.
+		key, title, subtitle = "handler:"+evt.Handler, evt.Handler, ""
+		if evt.Label != "" && evt.Label != evt.Handler {
+			title, subtitle = evt.Label, evt.Handler
 		}
 	}
 	group, ok := s.groups[key]

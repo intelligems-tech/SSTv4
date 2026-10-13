@@ -25,7 +25,7 @@ func TestStoreAssemblesAnInvocationFromEvents(t *testing.T) {
 	s.Apply(&aws.FunctionResponseEvent{RequestID: "r1", Output: []byte(`{"ok":true}`)})
 
 	groups := s.Groups("")
-	if len(groups) != 1 || groups[0].Title != "orders/get" || groups[0].Subtitle != "GET /orders" || groups[0].Total != 1 || groups[0].Running != 0 {
+	if len(groups) != 1 || groups[0].Title != "GET /orders" || groups[0].Subtitle != "orders/get" || groups[0].Total != 1 || groups[0].Running != 0 {
 		t.Fatalf("unexpected groups %+v", groups)
 	}
 	inv := groups[0].Invocations[0]
@@ -34,6 +34,15 @@ func TestStoreAssemblesAnInvocationFromEvents(t *testing.T) {
 	}
 	if Preview(inv) != "GET /orders" {
 		t.Fatalf("preview %q", Preview(inv))
+	}
+}
+
+func TestAHandlerWhoseLabelIsItsKeyHasNoSubtitle(t *testing.T) {
+	s, _ := newTestStore()
+	s.Apply(&aws.FunctionInvokedEvent{FunctionID: "Pool", RequestID: "r1", Handler: "cron/sync", Label: "cron/sync"})
+	group := s.Group("handler:cron/sync")
+	if group.Title != "cron/sync" || group.Subtitle != "" {
+		t.Fatalf("got %q / %q", group.Title, group.Subtitle)
 	}
 }
 
