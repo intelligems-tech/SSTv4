@@ -6,7 +6,8 @@
 #
 # It runs `sst dev` on a throwaway stage, invokes the three fixture functions
 # concurrently, checks that every response carries its own HANDLER_FN and the
-# RESOURCE_ENV override from this process, that no more than
+# RESOURCE_ENV override from this process, that the bundle's describe() labels
+# each invocation on the event stream, that no more than
 # SST_WORKER_POOL_SIZE workers were started, that touching the bundle's
 # .last-rebuild retires and replaces workers, and removes the stage.
 set -euo pipefail
@@ -73,7 +74,11 @@ invoke_all() {
 }
 
 echo "round 1: 30 concurrent invocations across 3 functions"
+curl -sN "$SERVER/stream" >smoke-stream.out &
+STREAM_PID=$!
 invoke_all one
+kill "$STREAM_PID" 2>/dev/null || true
+grep -q '"Handler":"round-one"' smoke-stream.out || { echo "invocations were not labelled by describe()"; exit 1; }
 STARTED=$(grep -c "pooled worker started" "$LOG" || true)
 echo "workers started: $STARTED (pool size $POOL_SIZE)"
 [ "$STARTED" -le "$POOL_SIZE" ] || { echo "more workers than the pool size"; exit 1; }

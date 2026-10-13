@@ -12,3 +12,9 @@ export const handler = async (event, context) => {
     event,
   };
 };
+
+// Names the handler for the dev UI, the way a dispatching bundle would.
+export const describe = (event) => ({
+  key: `round-${event?.round ?? "unknown"}`,
+  label: `round ${event?.round ?? "unknown"} #${event?.n ?? "?"}`,
+});

@@ -18,6 +18,9 @@ import (
 )
 
 func CmdUI(c *cli.Cli) error {
+	if c.String("filter") == invocationsFilter {
+		return CmdInvocations(c)
+	}
 	url, err := server.Discover("", "")
 	if err != nil {
 		return err
