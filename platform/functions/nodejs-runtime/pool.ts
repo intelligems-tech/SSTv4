@@ -100,9 +100,12 @@ function errorBody(ex: any) {
   };
 }
 
-function describeEvent(event: unknown): { key: string; label: string } {
+async function describeEvent(
+  event: unknown,
+  context: LambdaContext,
+): Promise<{ key: string; label: string }> {
   try {
-    const result = describe?.(event) as
+    const result = (await describe?.(event, context)) as
       | { key?: unknown; label?: unknown }
       | undefined;
     const key = typeof result?.key === "string" ? result.key : "";
@@ -131,9 +134,12 @@ process.on("unhandledRejection", (ex) => void postError(lastContext, ex));
 process.on("uncaughtException", (ex) => void postError(lastContext, ex));
 
 let fn: any;
-// Optional `describe(event) => { key, label }` export: names the handler a
-// dispatching bundle routes the event to, for the dev UI.
-let describe: ((event: unknown) => unknown) | undefined;
+// Optional `describe(event, context) => { key, label }` export (sync or
+// async): names the handler a dispatching bundle routes the event to, for the
+// dev UI.
+let describe:
+  | ((event: unknown, context: LambdaContext) => unknown)
+  | undefined;
 const loadStart = Date.now();
 try {
   if (!file) throw new Error(`Could not find handler file for "${handler}"`);
@@ -255,7 +261,7 @@ async function runLoop() {
     if (describe) {
       await post(
         `/runtime/invocation/${context.awsRequestId}/describe`,
-        describeEvent(event),
+        await describeEvent(event, context),
       ).catch(() => {});
     }
 
