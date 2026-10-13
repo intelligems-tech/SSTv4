@@ -54,6 +54,8 @@ type App struct {
 	messaged time.Time
 	width    int
 	height   int
+	// Screen row → list index of the rows drawn last, for clicks.
+	rowAt map[int]int
 }
 
 func NewApp(store *Store, now func() time.Time, purge Purger, copy Copier) *App {
@@ -151,6 +153,9 @@ func (a *App) move(delta int) {
 		a.follow = false
 		return
 	}
+	if a.view == viewInvocations {
+		a.follow = false
+	}
 	rows := a.rows()
 	a.cursor[a.view] = min(max(0, a.cursor[a.view]+delta), max(0, rows-1))
 }
@@ -199,6 +204,39 @@ func (a *App) HandleKey(evt *tcell.EventKey) bool {
 		a.rune(evt.Rune())
 	}
 	return true
+}
+
+// HandleMouse applies a mouse event: the wheel scrolls three rows, a click
+// on a row selects it and a click on the selected row opens it, and a click
+// on the title line goes back.
+func (a *App) HandleMouse(evt *tcell.EventMouse) {
+	switch {
+	case evt.Buttons()&tcell.WheelUp != 0:
+		a.move(-3)
+	case evt.Buttons()&tcell.WheelDown != 0:
+		a.move(3)
+	case evt.Buttons()&tcell.ButtonPrimary != 0:
+		if a.editing || a.confirm {
+			return
+		}
+		_, y := evt.Position()
+		if y == 0 {
+			a.back()
+			return
+		}
+		index, ok := a.rowAt[y]
+		if !ok {
+			return
+		}
+		if a.cursor[a.view] == index {
+			a.open()
+			return
+		}
+		a.cursor[a.view] = index
+		if a.view == viewInvocations {
+			a.follow = false
+		}
+	}
 }
 
 func (a *App) rune(r rune) {
@@ -421,6 +459,7 @@ func ago(now time.Time, t time.Time) string {
 func (a *App) Draw(screen tcell.Screen) {
 	screen.Clear()
 	a.width, a.height = screen.Size()
+	a.rowAt = map[int]int{}
 	y := 0
 	a.drawHeader(screen, y)
 	y++
@@ -531,6 +570,7 @@ func (a *App) drawGroups(screen tcell.Screen, y int) {
 	now := a.now()
 	for i := start; i < end; i++ {
 		group := groups[i]
+		a.rowAt[y] = i
 		style := styleNormal
 		if i == a.cursor[viewGroups] {
 			a.fill(screen, y, styleCursor)
@@ -581,6 +621,7 @@ func (a *App) drawInvocations(screen tcell.Screen, y int) {
 	now := a.now()
 	for i := start; i < end; i++ {
 		inv := list[i]
+		a.rowAt[y] = i
 		selected := i == a.cursor[viewInvocations]
 		pick := func(style tcell.Style) tcell.Style {
 			if selected {
@@ -796,6 +837,7 @@ func (a *App) drawSearch(screen tcell.Screen, y int) {
 	start, end := a.window(len(a.matches))
 	for i := start; i < end && y < a.height-1; i++ {
 		match := a.matches[i]
+		a.rowAt[y] = i
 		style, dim := styleNormal, styleDim
 		if i == a.cursor[viewSearch] {
 			a.fill(screen, y, styleCursor)

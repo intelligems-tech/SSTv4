@@ -12,3 +12,10 @@ func (vt *VT) WantsWheel() bool {
 	}
 	return vt.mode&(mouseButtons|mouseDrag|mouseMotion) != 0
 }
+
+// ReportsMouse reports whether the program asked for mouse button events.
+func (vt *VT) ReportsMouse() bool {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	return vt.mode&(mouseButtons|mouseDrag|mouseMotion) != 0
+}

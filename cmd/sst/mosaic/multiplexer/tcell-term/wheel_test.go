@@ -21,3 +21,18 @@ func TestWantsWheel(t *testing.T) {
 		}
 	}
 }
+
+func TestReportsMouse(t *testing.T) {
+	vt := New()
+	if vt.ReportsMouse() {
+		t.Fatal("a fresh terminal reports nothing")
+	}
+	vt.mode = smcup | altScroll
+	if vt.ReportsMouse() {
+		t.Fatal("full screen alone does not report clicks")
+	}
+	vt.mode = mouseButtons | mouseSGR
+	if !vt.ReportsMouse() {
+		t.Fatal("button reporting reports clicks")
+	}
+}

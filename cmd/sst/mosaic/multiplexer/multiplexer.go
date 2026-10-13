@@ -217,8 +217,7 @@ func (s *Multiplexer) Start() {
 				break
 
 			case *tcell.EventMouse:
-				if evt.Buttons()&(tcell.WheelUp|tcell.WheelDown) != 0 && selected != nil && !selected.dead && selected.vt.WantsWheel() {
-					selected.vt.HandleEvent(evt)
+				if s.forwardMouse(selected, evt) {
 					return
 				}
 				if evt.Buttons()&tcell.WheelUp != 0 {

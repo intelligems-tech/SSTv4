@@ -31,6 +31,7 @@ func Run(ctx context.Context, serverURL string, evts <-chan interface{}) error {
 		return err
 	}
 	defer screen.Fini()
+	screen.EnableMouse(tcell.MouseButtonEvents)
 
 	app := NewApp(NewStore(time.Now), time.Now, httpPurger(ctx, serverURL), clipboard.WriteAll)
 	go func() {
@@ -67,6 +68,12 @@ func Run(ctx context.Context, serverURL string, evts <-chan interface{}) error {
 			if !app.HandleKey(evt) {
 				return nil
 			}
+			app.Draw(screen)
+		case *tcell.EventMouse:
+			if evt.Buttons() == tcell.ButtonNone {
+				continue
+			}
+			app.HandleMouse(evt)
 			app.Draw(screen)
 		case *eventDev:
 			if evt.evt == nil {

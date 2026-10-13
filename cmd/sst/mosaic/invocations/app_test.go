@@ -218,3 +218,77 @@ func TestPrettyModeColoursJSONInTheDetail(t *testing.T) {
 	}
 	t.Fatalf("the input must show:\n%s", text)
 }
+
+func (h *harness) click(x, y int) {
+	h.app.HandleMouse(tcell.NewEventMouse(x, y, tcell.ButtonPrimary, tcell.ModNone))
+	h.draw()
+}
+
+func (h *harness) wheel(button tcell.ButtonMask) {
+	h.app.HandleMouse(tcell.NewEventMouse(0, 5, button, tcell.ModNone))
+	h.draw()
+}
+
+func rowOf(t *testing.T, h *harness, needle string) int {
+	for y, line := range strings.Split(h.text(), "\n") {
+		if strings.Contains(line, needle) {
+			return y
+		}
+	}
+	t.Fatalf("%q is not on screen:\n%s", needle, h.text())
+	return -1
+}
+
+func TestClickSelectsThenOpensARow(t *testing.T) {
+	h := newHarness(t)
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "A", RequestID: "1", Handler: "orders/get"})
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "A", RequestID: "2", Handler: "billing/sync"})
+	h.draw()
+
+	y := rowOf(t, h, "orders/get")
+	h.click(4, y)
+	if h.app.view != viewGroups || h.app.groups()[h.app.cursor[viewGroups]].Title != "orders/get" {
+		t.Fatal("the first click selects the row")
+	}
+	h.click(4, y)
+	if h.app.view != viewInvocations || h.app.group != "handler:orders/get" {
+		t.Fatal("a click on the selected row opens it")
+	}
+	h.click(0, 0)
+	if h.app.view != viewGroups {
+		t.Fatal("a click on the title line goes back")
+	}
+	h.click(4, h.app.height-2)
+	if h.app.view != viewGroups {
+		t.Fatal("a click on an empty row does nothing")
+	}
+}
+
+func TestWheelMovesTheSelectionAndStopsFollowing(t *testing.T) {
+	h := newHarness(t)
+	for _, id := range []string{"r1", "r2", "r3", "r4", "r5"} {
+		h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: id})
+	}
+	h.draw()
+	h.key(tcell.KeyEnter)
+	h.wheel(tcell.WheelDown)
+	if h.app.cursor[viewInvocations] != 3 || h.app.follow {
+		t.Fatalf("the wheel moves three rows and stops following, cursor %d", h.app.cursor[viewInvocations])
+	}
+	h.wheel(tcell.WheelUp)
+	if h.app.cursor[viewInvocations] != 0 {
+		t.Fatal("the wheel moves back up")
+	}
+}
+
+func TestKeysMoveTheInvocationSelectionWhileFollowing(t *testing.T) {
+	h := newHarness(t)
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: "r1"})
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: "r2"})
+	h.draw()
+	h.key(tcell.KeyEnter)
+	h.press('j')
+	if h.app.cursor[viewInvocations] != 1 {
+		t.Fatal("j must not be undone by follow on the next draw")
+	}
+}
