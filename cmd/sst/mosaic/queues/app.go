@@ -43,11 +43,27 @@ type App struct {
 	message  string
 	messaged time.Time
 	bodyTop  int
+	headerY  int
 	height   int
+	width    int
+
+	// prefix is the stage prefix queue names share, hidden in the table.
+	prefix         string
+	showDLQs       bool
+	sortColumn     int
+	sortDescending bool
 }
 
 func NewApp(store *Store, now func() time.Time, purge Purger, copy Copier) *App {
-	return &App{store: store, now: now, purge: purge, copy: copy, cursor: map[view]int{}}
+	return &App{store: store, now: now, purge: purge, copy: copy, cursor: map[view]int{}, sortColumn: -1}
+}
+
+// SetStage hides the `<stage>-` prefix every queue name carries.
+func (a *App) SetStage(stage string) {
+	a.prefix = ""
+	if stage != "" {
+		a.prefix = stage + "-"
+	}
 }
 
 func (a *App) Apply(evt interface{}) bool {
@@ -66,16 +82,12 @@ func (a *App) flash(message string) {
 	a.message, a.messaged = message, a.now()
 }
 
-func (a *App) queues() []*Queue {
-	return a.store.List(a.filter)
-}
-
 // selected is the queue under the cursor, or the open one.
 func (a *App) selected() *Queue {
 	if a.view == viewMessages {
 		return a.store.Queue(a.queue)
 	}
-	list := a.queues()
+	list := a.table()
 	if len(list) == 0 {
 		return nil
 	}
@@ -84,7 +96,7 @@ func (a *App) selected() *Queue {
 
 func (a *App) rows() int {
 	if a.view == viewQueues {
-		return len(a.queues())
+		return len(a.table())
 	}
 	if q := a.store.Queue(a.queue); q != nil {
 		return len(q.Messages)
@@ -173,6 +185,21 @@ func (a *App) HandleKey(evt *tcell.EventKey) bool {
 			}
 		case 'y':
 			a.copySelection()
+		case 's':
+			if a.view == viewQueues {
+				a.sortBy((a.sortColumn + 1) % len(a.columns()))
+			}
+		case 'S':
+			if a.view == viewQueues && a.sortColumn >= 0 {
+				a.sortDescending = !a.sortDescending
+			}
+		case '1', '2', '3', '4', '5', '6', '7':
+			if a.view == viewQueues {
+				a.sortBy(int(evt.Rune() - '1'))
+			}
+		case 'D':
+			a.showDLQs = !a.showDLQs
+			a.cursor[viewQueues] = 0
 		}
 	}
 	return true
@@ -186,7 +213,11 @@ func (a *App) HandleMouse(evt *tcell.EventMouse) {
 	case evt.Buttons()&tcell.WheelDown != 0:
 		a.move(3)
 	case evt.Buttons()&tcell.ButtonPrimary != 0:
-		_, y := evt.Position()
+		x, y := evt.Position()
+		if a.view == viewQueues && y == a.headerY {
+			a.sortBy(a.headerColumn(x, a.width))
+			return
+		}
 		row := y - a.bodyTop
 		if row < 0 || row >= a.rows() {
 			return
@@ -300,7 +331,7 @@ func (a *App) offset() int {
 func (a *App) Draw(screen tcell.Screen) {
 	screen.Clear()
 	width, height := screen.Size()
-	a.height = height
+	a.height, a.width = height, width
 	y := a.drawHeader(screen, width)
 	switch a.view {
 	case viewQueues:
@@ -315,7 +346,10 @@ func (a *App) Draw(screen tcell.Screen) {
 func (a *App) drawHeader(screen tcell.Screen, width int) int {
 	x := panekit.Text(screen, 0, 0, "≡ Queues", panekit.Title)
 	if a.view == viewMessages {
-		x = panekit.Text(screen, x, 0, "  › "+a.queue, panekit.Bold)
+		x = panekit.Text(screen, x, 0, "  › "+a.displayName(a.queue), panekit.Bold)
+	}
+	if a.view == viewQueues && a.prefix != "" {
+		x = panekit.Text(screen, x, 0, "  "+a.prefix+"…", panekit.Dim)
 	}
 	if !a.store.DepthAt.IsZero() {
 		note := "depth " + panekit.Ago(a.now(), a.store.DepthAt)
@@ -362,61 +396,7 @@ func (a *App) drawQueues(screen tcell.Screen, y int, width int) {
 	} else {
 		screen.HideCursor()
 	}
-	list := a.queues()
-	a.bodyTop = y
-	if len(list) == 0 {
-		panekit.Text(screen, 0, y, "No queues yet. They appear after the first deploy or message.", panekit.Dim)
-		return
-	}
-	a.cursor[viewQueues] = min(a.cursor[viewQueues], len(list)-1)
-	now := a.now()
-	for i := a.offset(); i < len(list) && y < a.height-1; i++ {
-		q := list[i]
-		selected := i == a.cursor[viewQueues]
-		pick := func(style tcell.Style) tcell.Style {
-			if selected {
-				return panekit.Cursor
-			}
-			return style
-		}
-		if selected {
-			panekit.Fill(screen, y, panekit.Cursor)
-		}
-		dot, dotStyle := "○", panekit.Dim
-		switch {
-		case q.Stall != nil:
-			dot, dotStyle = "⚠", panekit.Danger
-		case q.Running > 0:
-			dot, dotStyle = "●", panekit.Warning
-		case q.Received > 0:
-			dot, dotStyle = "●", panekit.Success
-		}
-		x := panekit.Text(screen, 0, y, dot+" ", pick(dotStyle))
-		name := q.Name
-		if q.IsDLQ() {
-			name += "  (DLQ)"
-		}
-		x = panekit.Text(screen, x, y, name, pick(panekit.Bold))
-		depth, depthStyle := depthText(q)
-		x = panekit.Text(screen, x+2, y, depth, pick(depthStyle))
-		if dlq := a.store.Queue(q.DLQ); dlq != nil && dlq.Waiting() > 0 {
-			x = panekit.Text(screen, x+2, y, fmt.Sprintf("DLQ %d", dlq.Waiting()), pick(panekit.Danger))
-		}
-		stats := ""
-		if q.Received > 0 {
-			stats = fmt.Sprintf("recv %d", q.Received)
-			if q.Failed > 0 {
-				stats += fmt.Sprintf(" · ✗ %d", q.Failed)
-			}
-			stats += " · " + panekit.Ago(now, q.Last)
-		}
-		statsStyle := panekit.Dim
-		if q.Failed > 0 {
-			statsStyle = panekit.Danger
-		}
-		panekit.Text(screen, max(x+2, width-utf8.RuneCountInString(stats)), y, stats, pick(statsStyle))
-		y++
-	}
+	a.drawTable(screen, y, width)
 }
 
 func messageDot(m *Message) (string, tcell.Style) {
@@ -520,7 +500,11 @@ func (a *App) drawFooter(screen tcell.Screen, y int) {
 	case a.editing:
 		hints = []string{"enter apply", "esc clear"}
 	case a.view == viewQueues:
-		hints = []string{"j/k move", "enter messages", "/ filter", "p purge", "d DLQ", "y copy URL"}
+		dlqs := "D show DLQs"
+		if a.showDLQs {
+			dlqs = "D hide DLQs"
+		}
+		hints = []string{"j/k move", "enter messages", "s/1-7 sort", "S flip", "/ filter", dlqs, "p purge", "d DLQ", "y copy URL"}
 	default:
 		hints = []string{"j/k move", "enter body", "y copy body", "p purge", "d DLQ", "esc back"}
 	}

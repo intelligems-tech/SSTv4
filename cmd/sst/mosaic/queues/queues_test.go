@@ -161,26 +161,102 @@ func (h *harness) text() string {
 	return b.String()
 }
 
-func TestPaneShowsDepthsAndDrillsIntoMessages(t *testing.T) {
-	h := newHarness(t)
-	h.app.Apply(deploy())
-	h.app.Apply(&aws.QueueDepthsEvent{At: time.Unix(1_700_000_000, 0), Depths: []aws.QueueDepth{
+// row returns the fields of the table row whose queue column is name.
+func (h *harness) row(name string) []string {
+	for _, line := range strings.Split(h.text(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 1 && fields[1] == name {
+			return fields
+		}
+	}
+	return nil
+}
+
+func depths() *aws.QueueDepthsEvent {
+	return &aws.QueueDepthsEvent{At: time.Unix(1_700_000_000, 0), Depths: []aws.QueueDepth{
 		{QueueName: "x-jobs.fifo", Visible: 12, InFlight: 3},
 		{QueueName: "x-jobs-dlq.fifo", Visible: 4},
 		{QueueName: "x-idle", Error: "AccessDenied"},
-	}})
+	}}
+}
+
+func TestTableShowsOneRowPerQueueWithTheDLQFolded(t *testing.T) {
+	h := newHarness(t)
+	h.app.SetStage("x")
+	h.app.Apply(deploy())
+	h.app.Apply(depths())
+	h.app.Apply(&aws.FunctionInvokedEvent{RequestID: "r1", Input: batch([]string{"msg-0001"}, 3)})
+	h.app.Apply(&aws.FunctionErrorEvent{RequestID: "r1", ErrorMessage: "boom"})
+	h.draw()
+
+	header := strings.Fields(strings.Split(h.text(), "\n")[2])
+	if strings.Join(header, " ") != "Queue Waiting Flight DLQ Recv Failed Last" {
+		t.Fatalf("unexpected header %v:\n%s", header, h.text())
+	}
+	jobs := h.row("jobs.fifo")
+	if strings.Join(jobs[2:7], " ") != "12 3 4 1 1" {
+		t.Fatalf("jobs row %v:\n%s", jobs, h.text())
+	}
+	if idle := h.row("idle"); strings.Join(idle[2:7], " ") != "– – – 0 0" {
+		t.Fatalf("an unreadable depth shows a dash, got %v", idle)
+	}
+	if h.row("jobs-dlq.fifo") != nil {
+		t.Fatal("a DLQ folds into its source row by default")
+	}
+	h.press('D')
+	if dlq := h.row("jobs-dlq.fifo"); dlq == nil || dlq[2] != "(DLQ)" {
+		t.Fatalf("D shows DLQ rows:\n%s", h.text())
+	}
+}
+
+func TestSortingByColumnKeepsStuckQueuesFirst(t *testing.T) {
+	h := newHarness(t)
+	h.app.SetStage("x")
+	h.app.Apply(deploy())
+	h.app.Apply(depths())
+	h.app.Apply(&aws.QueueDepthsEvent{Depths: []aws.QueueDepth{{QueueName: "x-jobs.fifo", Visible: 1}, {QueueName: "x-idle", Visible: 9}}})
+	h.draw()
+	order := func() []string {
+		names := []string{}
+		for _, q := range h.app.table() {
+			names = append(names, h.app.displayName(q.Name))
+		}
+		return names
+	}
+
+	h.press('2')
+	if got := order(); got[0] != "idle" || !strings.Contains(h.text(), "Waiting▼") {
+		t.Fatalf("2 sorts by waiting, most first, got %v", got)
+	}
+	h.press('2')
+	if got := order(); got[0] != "jobs.fifo" || !strings.Contains(h.text(), "Waiting▲") {
+		t.Fatalf("choosing the column again flips it, got %v", got)
+	}
+	h.press('S')
+	if got := order(); got[0] != "idle" {
+		t.Fatalf("S flips the direction, got %v", got)
+	}
+	h.app.Apply(&aws.QueueStallsEvent{Stalls: []aws.QueueStall{{QueueName: "x-jobs.fifo"}}})
+	if got := order(); got[0] != "jobs.fifo" {
+		t.Fatalf("a stuck queue stays on top of any sort, got %v", got)
+	}
+
+	h.app.HandleMouse(tcell.NewEventMouse(3, h.app.headerY, tcell.ButtonPrimary, tcell.ModNone))
+	if h.app.sortColumn != colQueue {
+		t.Fatalf("clicking a header sorts by it, got column %d", h.app.sortColumn)
+	}
+}
+
+func TestMessagesViewShowsRedriveAndBodies(t *testing.T) {
+	h := newHarness(t)
+	h.app.Apply(deploy())
+	h.app.Apply(depths())
 	h.app.Apply(&aws.FunctionInvokedEvent{RequestID: "r1", Label: "sqs x-jobs.fifo", Input: batch([]string{"msg-0001"}, 3)})
 	h.app.Apply(&aws.FunctionErrorEvent{RequestID: "r1", ErrorMessage: "boom"})
 	h.draw()
-	text := h.text()
-	for _, want := range []string{"12 waiting · 3 in flight", "DLQ 4", "x-jobs-dlq.fifo  (DLQ)", "depth unavailable", "recv 1 · ✗ 1"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("missing %q:\n%s", want, text)
-		}
-	}
 
 	h.key(tcell.KeyEnter)
-	text = h.text()
+	text := h.text()
 	if !strings.Contains(text, "DLQ x-jobs-dlq.fifo after 5 receives") || !strings.Contains(text, "msg-0001") || !strings.Contains(text, "×3") || !strings.Contains(text, "boom") {
 		t.Fatalf("the message view must show the redrive and the message:\n%s", text)
 	}
