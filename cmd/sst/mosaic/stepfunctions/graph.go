@@ -58,8 +58,8 @@ type Node struct {
 	Order int
 	// origin is the link a dummy carries.
 	origin int
-	X, Y  int
-	W     int
+	X, Y   int
+	W      int
 }
 
 // Center is the column edges attach to.
@@ -82,7 +82,7 @@ type edge struct {
 // Graph is a laid-out state machine, drawn top to bottom like the console's
 // graph view. Loops are drawn up the right side.
 type Graph struct {
-	Zoom   Zoom
+	Zoom  Zoom
 	Nodes []*Node
 	// links are the transitions between states; edges are the segments
 	// drawn for them.
