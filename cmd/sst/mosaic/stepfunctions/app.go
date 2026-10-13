@@ -84,6 +84,9 @@ type App struct {
 	scrollX, scrollY int
 	originX, originY int
 	follow           bool
+	// zoom indexes Zooms; viewW and viewH are the graph's last viewport.
+	zoom         int
+	viewW, viewH int
 
 	fetched     map[string]time.Time
 	listFetched time.Time
@@ -93,7 +96,7 @@ type App struct {
 }
 
 func NewApp(store *Store, now func() time.Time, fetch Fetcher, replay Replayer, copy Copier) *App {
-	return &App{store: store, now: now, fetch: fetch, replay: replay, copy: copy, cursor: map[view]int{}, fetched: map[string]time.Time{}}
+	return &App{store: store, now: now, fetch: fetch, replay: replay, copy: copy, cursor: map[view]int{}, fetched: map[string]time.Time{}, zoom: DefaultZoom}
 }
 
 // SetStage hides the `<stage>-` prefix names carry.
@@ -208,14 +211,46 @@ func (a *App) stepExecution(delta int) {
 	}
 }
 
-func (a *App) selectedNode(m *Machine) *Node {
-	if m == nil || m.Graph == nil {
+// graph is a machine's graph at the current zoom, or nil.
+func (a *App) graph(m *Machine) *Graph {
+	if m == nil {
 		return nil
 	}
-	if n := m.Graph.Node(a.state); n != nil {
+	return m.Graph(a.zoom)
+}
+
+// setZoom changes the zoom and keeps the selected state in view.
+func (a *App) setZoom(zoom int) {
+	zoom = min(max(0, zoom), len(Zooms)-1)
+	if zoom != a.zoom {
+		a.zoom, a.follow = zoom, true
+	}
+}
+
+// zoomToFit picks the most zoomed-in level whose graph fits the viewport,
+// or the overview when none does.
+func (a *App) zoomToFit() {
+	m := a.store.Machine(a.machine)
+	if m == nil || m.Definition == nil {
+		return
+	}
+	for zoom := len(Zooms) - 1; zoom >= 0; zoom-- {
+		if g := m.Graph(zoom); zoom == 0 || g.Width <= a.viewW && g.Height <= a.viewH {
+			a.setZoom(zoom)
+			return
+		}
+	}
+}
+
+func (a *App) selectedNode(m *Machine) *Node {
+	g := a.graph(m)
+	if g == nil {
+		return nil
+	}
+	if n := g.Node(a.state); n != nil {
 		return n
 	}
-	if nodes := m.Graph.Selectable(); len(nodes) > 0 {
+	if nodes := g.Selectable(); len(nodes) > 0 {
 		a.state = nodes[0].State.Name
 		return nodes[0]
 	}
@@ -351,12 +386,12 @@ func (a *App) graphKey(evt *tcell.EventKey) {
 		return
 	}
 	step := func(dx int, dy int) {
-		if n := m.Graph.Neighbour(current, dx, dy); n != nil {
+		if n := a.graph(m).Neighbour(current, dx, dy); n != nil {
 			a.selectNode(n)
 		}
 	}
 	cycle := func(delta int) {
-		nodes := m.Graph.Selectable()
+		nodes := a.graph(m).Selectable()
 		for i, n := range nodes {
 			if n == current {
 				a.selectNode(nodes[(i+delta+len(nodes))%len(nodes)])
@@ -399,6 +434,12 @@ func (a *App) graphKey(evt *tcell.EventKey) {
 			a.refresh()
 		case 'R':
 			a.askReplayExecution()
+		case '+', '=':
+			a.setZoom(a.zoom + 1)
+		case '-', '_':
+			a.setZoom(a.zoom - 1)
+		case '0':
+			a.zoomToFit()
 		}
 	}
 }
@@ -414,18 +455,23 @@ func (a *App) HandleMouse(evt *tcell.EventMouse) {
 		wheel = 3
 	}
 	if a.view == viewGraph {
-		if wheel != 0 {
+		switch {
+		case wheel != 0 && evt.Modifiers()&tcell.ModCtrl != 0:
+			// Ctrl+wheel zooms; wheel up zooms in.
+			a.setZoom(a.zoom - wheel/3)
+			return
+		case wheel != 0:
 			a.scrollY += wheel
 			return
 		}
 		if evt.Buttons()&tcell.ButtonPrimary == 0 {
 			return
 		}
-		m := a.store.Machine(a.machine)
-		if m == nil || m.Graph == nil {
+		g := a.graph(a.store.Machine(a.machine))
+		if g == nil {
 			return
 		}
-		n := m.Graph.At(x-a.originX+a.scrollX, y-a.originY+a.scrollY)
+		n := g.At(x-a.originX+a.scrollX, y-a.originY+a.scrollY)
 		if n == nil {
 			return
 		}
@@ -760,7 +806,8 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 		panekit.Text(screen, 0, y, "This state machine is no longer deployed.", panekit.Dim)
 		return
 	}
-	if m.Graph == nil {
+	g := a.graph(m)
+	if g == nil {
 		panekit.Text(screen, 0, y, "Cannot read the definition: "+m.ParseError, panekit.Danger)
 		return
 	}
@@ -787,7 +834,7 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 	y += 2
 
 	selected := a.selectedNode(m)
-	canvas := m.Graph.Draw(func(n *Node, isSelected bool) tcell.Style {
+	canvas := g.Draw(func(n *Node, isSelected bool) tcell.Style {
 		style := panekit.Normal
 		switch {
 		case n.Kind != KindState:
@@ -802,8 +849,9 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 	}, selected, panekit.Dim)
 
 	viewW, viewH := width, max(1, height-2-y)
-	a.scrollX, a.originX = a.fit(a.scrollX, canvas.W, viewW, selected, true)
-	a.scrollY, a.originY = a.fit(a.scrollY, canvas.H, viewH, selected, false)
+	a.viewW, a.viewH = viewW, viewH
+	a.scrollX, a.originX = a.fit(a.scrollX, canvas.W, viewW, selected, g.Zoom.BoxHeight, true)
+	a.scrollY, a.originY = a.fit(a.scrollY, canvas.H, viewH, selected, g.Zoom.BoxHeight, false)
 	a.originY += y
 	a.follow = false
 	for row := 0; row < viewH; row++ {
@@ -822,7 +870,7 @@ func (a *App) drawGraph(screen tcell.Screen, y int, width int, height int) {
 // fit clamps a scroll offset, follows the selection when asked, and centres
 // a drawing smaller than the view. It returns the scroll and the screen
 // origin of the drawing on that axis.
-func (a *App) fit(scroll int, size int, view int, selected *Node, horizontal bool) (int, int) {
+func (a *App) fit(scroll int, size int, view int, selected *Node, boxHeight int, horizontal bool) (int, int) {
 	if size <= view {
 		if horizontal {
 			return 0, (view - size) / 2
@@ -1039,7 +1087,7 @@ func (a *App) drawFooter(screen tcell.Screen, y int) {
 	case viewMachines:
 		hints = []string{"j/k move", "enter graph", "y copy ARN"}
 	case viewGraph:
-		hints = []string{"arrows/hjkl move", "enter visits", "[ ] older/newer execution", "R replay execution", "f refresh", "esc back"}
+		hints = []string{"arrows/hjkl move", "enter visits", "+/- zoom (" + Zooms[a.zoom].Name + ")", "0 fit", "[ ] execution", "R replay execution", "f refresh", "esc back"}
 	default:
 		hints = []string{"j/k move", "enter expand", "r replay state", "R replay execution", "y copy", "esc back"}
 	}

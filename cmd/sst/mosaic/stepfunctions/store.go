@@ -18,7 +18,8 @@ type Machine struct {
 	aws.StateMachineResource
 	Definition *aws.Machine
 	ParseError string
-	Graph      *Graph
+	// graphs caches the graph at each zoom.
+	graphs map[int]*Graph
 	// Executions are the recent executions, newest first.
 	Executions []aws.StepFunctionExecution
 	Error      string
@@ -103,18 +104,32 @@ func (s *Store) deployed(resources []aws.StateMachineResource) {
 			m = &Machine{}
 		}
 		if !ok || m.StateMachineResource.Definition != resource.Definition {
-			m.Definition, m.Graph, m.ParseError = nil, nil, ""
+			m.Definition, m.graphs, m.ParseError = nil, map[int]*Graph{}, ""
 			definition, err := aws.ParseDefinition(resource.Definition)
 			if err != nil {
 				m.ParseError = err.Error()
 			} else {
-				m.Definition, m.Graph = definition, NewGraph(definition)
+				m.Definition = definition
 			}
 		}
 		m.StateMachineResource = resource
 		next[resource.Arn] = m
 	}
 	s.machines = next
+}
+
+// Graph is the machine's graph at a zoom, or nil when its definition
+// cannot be read.
+func (m *Machine) Graph(zoom int) *Graph {
+	if m.Definition == nil {
+		return nil
+	}
+	if g, ok := m.graphs[zoom]; ok {
+		return g
+	}
+	g := NewGraph(m.Definition, Zooms[zoom])
+	m.graphs[zoom] = g
+	return g
 }
 
 func (s *Store) replay(id string) *Replay {

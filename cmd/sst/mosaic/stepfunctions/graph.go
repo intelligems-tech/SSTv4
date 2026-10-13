@@ -22,15 +22,32 @@ const (
 	KindDummy
 )
 
-// Layout constants: a box is three rows, layers are six rows apart, and the
-// gap between layers holds a stub, a channel and an arrow.
-const (
-	boxHeight  = 3
-	layerPitch = 6
-	nodeGap    = 3
-	maxLabel   = 30
-	laneGap    = 2
-)
+// laneGap is the space between the lanes loops run up.
+const laneGap = 2
+
+// Zoom is how densely a graph is drawn. A box is one row (a bracketed
+// label) or three (a bordered one); the rows between layers hold the
+// edges' channel and arrow.
+type Zoom struct {
+	Name      string
+	BoxHeight int
+	// Pitch is the rows from one layer to the next.
+	Pitch int
+	// Gap is the columns between nodes in a layer.
+	Gap      int
+	MaxLabel int
+}
+
+// Zooms run from the most zoomed out to the most zoomed in.
+var Zooms = []Zoom{
+	{Name: "overview", BoxHeight: 1, Pitch: 4, Gap: 1, MaxLabel: 10},
+	{Name: "compact", BoxHeight: 1, Pitch: 4, Gap: 3, MaxLabel: 20},
+	{Name: "detailed", BoxHeight: 3, Pitch: 6, Gap: 3, MaxLabel: 30},
+	{Name: "wide", BoxHeight: 3, Pitch: 7, Gap: 6, MaxLabel: 60},
+}
+
+// DefaultZoom is the detailed zoom.
+const DefaultZoom = 2
 
 type Node struct {
 	Kind  NodeKind
@@ -60,6 +77,7 @@ type edge struct {
 // Graph is a laid-out state machine, drawn top to bottom like the console's
 // graph view. Loops are drawn up the right side.
 type Graph struct {
+	Zoom   Zoom
 	Nodes  []*Node
 	edges  []edge
 	layers [][]int
@@ -76,9 +94,9 @@ func (g *Graph) Node(state string) *Node {
 	return nil
 }
 
-// NewGraph builds and lays out the graph of a definition.
-func NewGraph(m *aws.Machine) *Graph {
-	g := &Graph{byName: map[string]int{}}
+// NewGraph builds and lays out the graph of a definition at a zoom.
+func NewGraph(m *aws.Machine, zoom Zoom) *Graph {
+	g := &Graph{Zoom: zoom, byName: map[string]int{}}
 	start := g.add(&Node{Kind: KindStart, Label: "Start"})
 	end := g.add(&Node{Kind: KindEnd, Label: "End"})
 	entry := g.machine(m, end)
@@ -96,9 +114,12 @@ func NewGraph(m *aws.Machine) *Graph {
 }
 
 func (g *Graph) add(n *Node) int {
-	if n.Box() {
+	switch {
+	case n.Box() && g.Zoom.BoxHeight == 1:
+		n.W = utf8.RuneCountInString(n.Label) + 2
+	case n.Box():
 		n.W = utf8.RuneCountInString(n.Label) + 4
-	} else {
+	default:
 		n.W = 1
 	}
 	g.Nodes = append(g.Nodes, n)
@@ -119,7 +140,7 @@ func (g *Graph) link(from int, to int) {
 func (g *Graph) machine(m *aws.Machine, exit int) int {
 	for _, name := range m.Order {
 		state := m.States[name]
-		g.byName[name] = g.add(&Node{Kind: KindState, State: state, Label: label(state)})
+		g.byName[name] = g.add(&Node{Kind: KindState, State: state, Label: label(state, g.Zoom.MaxLabel)})
 	}
 	for _, name := range m.Order {
 		state := m.States[name]
@@ -156,7 +177,7 @@ func (g *Graph) machine(m *aws.Machine, exit int) int {
 }
 
 // label is a state's name behind a glyph for its type.
-func label(state *aws.State) string {
+func label(state *aws.State, maxLabel int) string {
 	name := state.Name
 	if utf8.RuneCountInString(name) > maxLabel {
 		name = string([]rune(name)[:maxLabel-1]) + "…"
@@ -352,10 +373,10 @@ func (g *Graph) place() {
 		cursor := 0
 		for i, n := range layer {
 			node := g.Nodes[n]
-			node.Y = l * layerPitch
+			node.Y = l * g.Zoom.Pitch
 			if len(preds[n]) == 0 || l == 0 {
 				desired[i] = float64(cursor + node.W/2)
-				cursor += node.W + nodeGap
+				cursor += node.W + g.Zoom.Gap
 				continue
 			}
 			sum := 0
@@ -369,8 +390,8 @@ func (g *Graph) place() {
 		for i, n := range layer {
 			node := g.Nodes[n]
 			x := int(desired[i]) - node.W/2
-			if i > 0 && x < right+nodeGap {
-				x = right + nodeGap
+			if i > 0 && x < right+g.Zoom.Gap {
+				x = right + g.Zoom.Gap
 			}
 			node.X = x
 			right = x + node.W
@@ -387,7 +408,7 @@ func (g *Graph) place() {
 	for _, n := range g.Nodes {
 		left = min(left, n.X)
 	}
-	g.Width, g.Height = 0, len(g.layers)*layerPitch-(layerPitch-boxHeight)
+	g.Width, g.Height = 0, len(g.layers)*g.Zoom.Pitch-(g.Zoom.Pitch-g.Zoom.BoxHeight)
 	for _, n := range g.Nodes {
 		n.X -= left
 		g.Width = max(g.Width, n.X+n.W)
@@ -426,7 +447,7 @@ func (g *Graph) Selectable() []*Node {
 // At is the state node drawn at a cell, or nil.
 func (g *Graph) At(x int, y int) *Node {
 	for _, n := range g.Nodes {
-		if n.Kind == KindState && x >= n.X && x < n.X+n.W && y >= n.Y && y < n.Y+boxHeight {
+		if n.Kind == KindState && x >= n.X && x < n.X+n.W && y >= n.Y && y < n.Y+g.Zoom.BoxHeight {
 			return n
 		}
 	}
@@ -580,13 +601,14 @@ type Styler func(n *Node, selected bool) tcell.Style
 // Draw renders the graph.
 func (g *Graph) Draw(styleFor Styler, selected *Node, edgeStyle tcell.Style) *Canvas {
 	c := newCanvas(g.Width, g.Height)
+	boxHeight := g.Zoom.BoxHeight
 	for _, e := range g.edges {
 		if e.back {
 			continue
 		}
 		from, to := g.Nodes[e.from], g.Nodes[e.to]
 		bottom := from.Y + boxHeight - 1
-		channel := bottom + 2
+		channel := bottom + g.Zoom.Pitch - boxHeight - 1
 		c.vline(from.Center(), bottom, channel, edgeStyle)
 		c.hline(channel, from.Center(), to.Center(), edgeStyle)
 		c.vline(to.Center(), channel, to.Y, edgeStyle)
@@ -594,7 +616,7 @@ func (g *Graph) Draw(styleFor Styler, selected *Node, edgeStyle tcell.Style) *Ca
 	lane := g.Width - laneGap
 	for _, e := range g.backEdges() {
 		from, to := g.Nodes[e.from], g.Nodes[e.to]
-		fromRow, toRow := from.Y+1, to.Y+1
+		fromRow, toRow := from.Y+boxHeight/2, to.Y+boxHeight/2
 		if g.blockedRight(from) {
 			// Leave from below so the line does not run through a neighbour.
 			fromRow = from.Y + boxHeight
@@ -619,12 +641,12 @@ func (g *Graph) Draw(styleFor Styler, selected *Node, edgeStyle tcell.Style) *Ca
 	for _, e := range g.edges {
 		from, to := g.Nodes[e.from], g.Nodes[e.to]
 		if e.back {
-			if from.Box() && g.blockedRight(from) {
+			if from.Box() && boxHeight > 1 && g.blockedRight(from) {
 				c.put(from.Center(), from.Y+boxHeight-1, '┬', styleFor(from, from == selected))
 			}
 			continue
 		}
-		if from.Box() {
+		if from.Box() && boxHeight > 1 {
 			c.put(from.Center(), from.Y+boxHeight-1, '┬', styleFor(from, from == selected))
 		}
 		if to.Box() {
@@ -645,6 +667,10 @@ func (g *Graph) blockedRight(n *Node) bool {
 }
 
 func (g *Graph) drawBox(c *Canvas, n *Node, style tcell.Style) {
+	if g.Zoom.BoxHeight == 1 {
+		c.text(n.X, n.Y, "["+n.Label+"]", style)
+		return
+	}
 	inner := n.W - 2
 	c.text(n.X, n.Y, "╭"+strings.Repeat("─", inner)+"╮", style)
 	c.text(n.X, n.Y+1, "│ "+n.Label+" │", style)

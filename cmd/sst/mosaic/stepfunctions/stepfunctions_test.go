@@ -97,7 +97,7 @@ func TestGraphLaysOutEveryStateWithoutOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g := NewGraph(m)
+	g := NewGraph(m, Zooms[DefaultZoom])
 	for _, name := range []string{"Validate", "Route", "Wait a bit", "Fan out", "Charge", "Email", "Log", "Give up", "Done"} {
 		if g.Node(name) == nil {
 			t.Fatalf("no node for %s", name)
@@ -143,7 +143,7 @@ func TestOpeningAMachineDrawsItsGraphColouredByTheLatestExecution(t *testing.T) 
 		}
 	}
 	m := app.store.Machine(machineArn)
-	charge := m.Graph.Node("Charge")
+	charge := m.Graph(app.zoom).Node("Charge")
 	_, _, style, _ := screen.GetContent(app.originX+charge.X-app.scrollX, app.originY+charge.Y-app.scrollY)
 	if fg, _, _ := style.Decompose(); fg != tcell.ColorRed {
 		t.Fatalf("a failed state is red, got %v", fg)
@@ -163,7 +163,7 @@ func TestClickingANodeShowsItsVisitsAndReplaysThem(t *testing.T) {
 	app.Apply(executions(c.now()))
 	draw(app, 160, 60)
 
-	charge := app.store.Machine(machineArn).Graph.Node("Charge")
+	charge := app.store.Machine(machineArn).Graph(app.zoom).Node("Charge")
 	click := func() {
 		app.HandleMouse(tcell.NewEventMouse(app.originX+charge.X+1-app.scrollX, app.originY+charge.Y+1-app.scrollY, tcell.ButtonPrimary, tcell.ModNone))
 	}
@@ -239,5 +239,49 @@ func TestStateStatusPrefersFailures(t *testing.T) {
 	}
 	if got := StateStatus(execution, "Other"); got != "" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestZoomChangesDensityAndKeepsEveryLevelDrawable(t *testing.T) {
+	m, err := aws.ParseDefinition(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := (*Graph)(nil)
+	for _, zoom := range Zooms {
+		g := NewGraph(m, zoom)
+		text := g.Draw(func(*Node, bool) tcell.Style { return tcell.StyleDefault }, nil, tcell.StyleDefault).String()
+		if !strings.Contains(text, "Validate") || !strings.Contains(text, "▼") || !strings.Contains(text, "◀") {
+			t.Fatalf("%s zoom draws states, edges and loops\n%s", zoom.Name, text)
+		}
+		if previous != nil && (g.Width < previous.Width || g.Height < previous.Height) {
+			t.Fatalf("%s zoom is not larger than the one before", zoom.Name)
+		}
+		previous = g
+	}
+
+	app, _, c := newTestApp()
+	app.Apply(deploy())
+	app.HandleKey(special(tcell.KeyEnter))
+	app.Apply(executions(c.now()))
+	app.HandleKey(key('-'))
+	app.HandleKey(key('-'))
+	app.HandleKey(key('-'))
+	if app.zoom != 0 {
+		t.Fatalf("- zooms out to the overview and stops, got %d", app.zoom)
+	}
+	app.HandleKey(key('+'))
+	if app.zoom != 1 {
+		t.Fatalf("+ zooms in, got %d", app.zoom)
+	}
+	draw(app, 200, 80)
+	app.HandleKey(key('0'))
+	if app.zoom != len(Zooms)-1 {
+		t.Fatalf("0 picks the closest zoom that fits a large screen, got %d", app.zoom)
+	}
+	draw(app, 40, 20)
+	app.HandleKey(key('0'))
+	if app.zoom != 0 {
+		t.Fatalf("0 falls back to the overview on a small screen, got %d", app.zoom)
 	}
 }
