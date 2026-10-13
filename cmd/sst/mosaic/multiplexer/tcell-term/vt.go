@@ -33,6 +33,8 @@ type VT struct {
 	TERM string
 
 	mu sync.Mutex
+	// writeMu orders writes to the pty, which happen outside mu.
+	writeMu sync.Mutex
 
 	activeScreen      [][]cell
 	altScreen         [][]cell
@@ -577,29 +579,38 @@ func (vt *VT) drawRow(row int, cols []cell) {
 	}
 }
 
+// HandleEvent sends an input event to the program. The write happens outside
+// vt.mu: a program whose input is full is blocked writing output, and only
+// the reader, which needs vt.mu, can drain that output and unblock it.
 func (vt *VT) HandleEvent(e tcell.Event) bool {
+	input, handled := vt.encodeInput(e)
+	if input != "" {
+		vt.writeMu.Lock()
+		defer vt.writeMu.Unlock()
+		vt.pty.WriteString(input)
+	}
+	return handled
+}
+
+func (vt *VT) encodeInput(e tcell.Event) (string, bool) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 	switch e := e.(type) {
 	case *tcell.EventKey:
-		vt.pty.WriteString(keyCode(e))
-		return true
+		return keyCode(e), true
 	case *tcell.EventPaste:
 		switch {
 		case vt.mode&paste == 0:
-			return false
+			return "", false
 		case e.Start():
-			vt.pty.WriteString(info.PasteStart)
-			return true
+			return info.PasteStart, true
 		case e.End():
-			vt.pty.WriteString(info.PasteEnd)
-			return true
+			return info.PasteEnd, true
 		}
 	case *tcell.EventMouse:
-		str := vt.handleMouse(e)
-		vt.pty.WriteString(str)
+		return vt.handleMouse(e), false
 	}
-	return false
+	return "", false
 }
 
 func (vt *VT) Clear() {
