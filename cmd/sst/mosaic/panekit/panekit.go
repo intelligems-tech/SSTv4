@@ -114,9 +114,15 @@ func Run(ctx context.Context, evts <-chan interface{}, model Model) error {
 // Purge asks the dev server to purge a queue. The outcome arrives as a
 // QueuePurgedEvent on the stream.
 func Purge(ctx context.Context, serverURL string, queue string, region string) {
+	Post(ctx, serverURL, "/api/sqs/purge", map[string]string{"queue": queue, "region": region})
+}
+
+// Post sends a JSON request to the dev server in the background. Outcomes
+// arrive as events on the stream, so the response is dropped.
+func Post(ctx context.Context, serverURL string, path string, payload interface{}) {
 	go func() {
-		body, _ := json.Marshal(map[string]string{"queue": queue, "region": region})
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+"/api/sqs/purge", bytes.NewReader(body))
+		body, _ := json.Marshal(payload)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, serverURL+path, bytes.NewReader(body))
 		if err != nil {
 			return
 		}

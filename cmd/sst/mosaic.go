@@ -320,6 +320,7 @@ func CmdMosaic(c *cli.Cli) error {
 		})
 		multi.AddProcess(invocationsPane(currentExecutable, multiEnv, p.PathLog("ui-invocations")))
 		multi.AddProcess(queuesPane(currentExecutable, multiEnv, p.PathLog("ui-queues")))
+		multi.AddProcess(cronsPane(currentExecutable, multiEnv, p.PathLog("ui-crons")))
 		defer func() {
 			multi.Exit()
 		}()
