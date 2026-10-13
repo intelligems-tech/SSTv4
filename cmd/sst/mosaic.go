@@ -262,20 +262,8 @@ func CmdMosaic(c *cli.Cli) error {
 		serverURL := fmt.Sprintf("http://localhost:%v", server.Port)
 		_, hasAWS := p.App().Providers["aws"]
 		showWorkers := p.App().Home == "cloudflare" && !hasAWS
-		handlers := newHandlerCatalog()
-		wg.Go(func() error {
-			invoked := bus.Subscribe(&aws.FunctionInvokedEvent{})
-			for {
-				select {
-				case <-c.Context.Done():
-					return nil
-				case evt := <-invoked:
-					if evt, ok := evt.(*aws.FunctionInvokedEvent); ok {
-						handlers.Observe(evt)
-					}
-				}
-			}
-		})
+		handlers := startHandlerCatalog(c.Context)
+		startDevStatus(c.Context, multi, p.App().Stage)
 		fnTitle := "Functions"
 		fnFilter := "function"
 		if showWorkers {

@@ -48,6 +48,8 @@ type Multiplexer struct {
 	filterScroll    int
 	filterSearching bool
 	filterQuery     string
+
+	status Status
 }
 
 type FilterOption struct {
@@ -154,6 +156,11 @@ func (s *Multiplexer) Start() {
 
 			case *EventExit:
 				shouldBreak = true
+				return
+
+			case *EventStatus:
+				s.status = evt.Status
+				s.draw()
 				return
 
 			case *EventCheckFilter:

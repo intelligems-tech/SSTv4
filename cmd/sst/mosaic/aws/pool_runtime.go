@@ -48,6 +48,11 @@ func newPoolRuntime(ctx context.Context, in input, server string, cfg PoolConfig
 		stopped: make(chan string, 1000),
 	}
 	r.pool = NewPool(cfg, r.startWorker, r.stopWorker)
+	in.server.Mux.HandleFunc(`/lambda/{workerID}/2018-06-01/runtime/invocation/{requestID}/describe`, func(w http.ResponseWriter, req *http.Request) {
+		if !r.handleDescribe(w, req, req.PathValue("workerID"), req.PathValue("requestID")) {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
 	go r.statsLoop()
 	return r
 }

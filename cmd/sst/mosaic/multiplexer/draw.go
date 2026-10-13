@@ -52,6 +52,7 @@ func (s *Multiplexer) draw() {
 		s.stack.AddWidget(title, 0)
 	}
 	s.stack.AddWidget(views.NewSpacer(), 1)
+	s.drawStatus()
 
 	hotkeys := map[string]string{}
 	if s.filtering && s.filterSearching {

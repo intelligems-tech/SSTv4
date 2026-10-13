@@ -72,6 +72,7 @@ func Start(
 
 	in.msg = functionsChan
 	go function(ctx, in)
+	startQueueStalls(ctx, config, s)
 
 	in.msg = tasksChan
 	go task(ctx, in)
