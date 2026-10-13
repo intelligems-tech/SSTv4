@@ -74,6 +74,7 @@ func Start(
 	go function(ctx, in)
 	startQueues(ctx, config, s)
 	startCrons(ctx, config, s)
+	startStepFunctions(ctx, config, s)
 
 	in.msg = tasksChan
 	go task(ctx, in)

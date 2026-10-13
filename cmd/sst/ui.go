@@ -27,6 +27,9 @@ func CmdUI(c *cli.Cli) error {
 	if c.String("filter") == cronsFilter {
 		return CmdCrons(c)
 	}
+	if c.String("filter") == stepFunctionsFilter {
+		return CmdStepFunctions(c)
+	}
 	url, err := server.Discover("", "")
 	if err != nil {
 		return err

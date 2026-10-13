@@ -27,6 +27,12 @@ type MouseModel interface {
 	HandleMouse(evt *tcell.EventMouse)
 }
 
+// TickModel is a Model that does periodic work, such as polling the dev
+// server; Tick runs about every 100 ms and reports whether a redraw is due.
+type TickModel interface {
+	Tick() bool
+}
+
 type eventDev struct {
 	tcell.EventTime
 	evt interface{}
@@ -49,6 +55,7 @@ func Run(ctx context.Context, evts <-chan interface{}, model Model) error {
 	}
 	defer screen.Fini()
 	mouse, hasMouse := model.(MouseModel)
+	ticker, hasTick := model.(TickModel)
 	if hasMouse {
 		screen.EnableMouse(tcell.MouseButtonEvents)
 	}
@@ -102,6 +109,9 @@ func Run(ctx context.Context, evts <-chan interface{}, model Model) error {
 				dirty = true
 			}
 		case *eventTick:
+			if hasTick && ticker.Tick() {
+				dirty = true
+			}
 			if dirty || time.Since(lastDraw) > time.Second {
 				model.Draw(screen)
 				dirty = false
