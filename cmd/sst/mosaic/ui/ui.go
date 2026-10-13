@@ -51,6 +51,7 @@ type UI struct {
 	workerTime map[string]time.Time
 	// Handler a pooled request runs, by request id, while it runs.
 	handlers  map[string]invocationHandler
+	rollup    *rollup
 	complete  *project.CompleteEvent
 	footer    *footer
 	buffer    []interface{}
@@ -154,6 +155,7 @@ func (u *UI) blank() {
 }
 
 func (u *UI) reset() {
+	u.rollup = newRollup()
 	u.complete = nil
 	u.parents = map[string]string{}
 	u.dedupe = map[string]bool{}
@@ -349,6 +351,9 @@ func (u *UI) Event(unknown interface{}) {
 		}
 
 		duration := time.Since(u.timing[evt.Metadata.URN]).Round(time.Millisecond)
+		if u.rollupOutputs(evt, duration) {
+			return
+		}
 		if evt.Metadata.Op == apitype.OpSame && u.mode == ProgressModeRefresh {
 			u.printProgress(
 				TEXT_SUCCESS,
@@ -438,6 +443,7 @@ func (u *UI) Event(unknown interface{}) {
 			break
 		}
 
+		u.printRollupSummary()
 		u.blank()
 		if len(evt.Errors) == 0 && evt.Finished {
 			u.print(TEXT_SUCCESS_BOLD.Render(IconCheck))
