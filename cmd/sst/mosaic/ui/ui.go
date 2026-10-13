@@ -232,7 +232,7 @@ func (u *UI) Event(unknown interface{}) {
 		}
 		duration := time.Since(u.workerTime[evt.WorkerID]).Round(time.Millisecond)
 		formattedDuration := fmt.Sprintf("%.9s", fmt.Sprintf("+%v", duration))
-		u.printEvent(GetColor(evt.WorkerID), formattedDuration, u.formatFunctionLogLine(evt.Line))
+		u.printFunctionLog(GetColor(evt.WorkerID), formattedDuration, evt.Line)
 
 	case *aws.FunctionBuildEvent:
 		if !u.matchFilter(evt.FunctionID) {

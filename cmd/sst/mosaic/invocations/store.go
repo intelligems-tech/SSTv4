@@ -4,6 +4,7 @@
 package invocations
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -322,18 +323,11 @@ func Preview(inv *Invocation) string {
 	return text
 }
 
-// PrettyJSON indents JSON, or returns the input as is.
+// PrettyJSON indents JSON as written, or returns the input as is.
 func PrettyJSON(data []byte) string {
-	var value interface{}
-	if len(data) == 0 {
-		return ""
-	}
-	if json.Unmarshal(data, &value) != nil {
+	var out bytes.Buffer
+	if json.Indent(&out, bytes.TrimSpace(data), "", "  ") != nil {
 		return string(data)
 	}
-	pretty, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		return string(data)
-	}
-	return string(pretty)
+	return out.String()
 }

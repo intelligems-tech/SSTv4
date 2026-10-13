@@ -155,3 +155,26 @@ func TestCtrlCExits(t *testing.T) {
 		t.Fatal("ctrl-c must exit the pane")
 	}
 }
+
+func TestPrettyJSONModeUnwrapsNestedJSONInDetail(t *testing.T) {
+	h := newHarness(t)
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: "r1", Input: []byte(`{"body":"{\"orderId\":42}"}`)})
+	h.app.Apply(&aws.FunctionLogEvent{RequestID: "r1", Line: `INFO {"msg":"saved","meta":"{\"n\":1}"}`})
+	h.key(tcell.KeyEnter)
+	h.key(tcell.KeyEnter)
+	if strings.Contains(h.text(), `"n": 1`) {
+		t.Fatal("pretty mode starts off without SST_PRETTY_JSON")
+	}
+	h.press('J')
+	if !strings.Contains(h.text(), `"n": 1`) {
+		t.Fatalf("J must pretty print JSON log lines:\n%s", h.text())
+	}
+	h.press('i')
+	if !strings.Contains(h.text(), `"orderId": 42`) {
+		t.Fatalf("the input body must be decoded:\n%s", h.text())
+	}
+	h.press('y')
+	if !strings.Contains(h.copied[len(h.copied)-1], `"orderId": 42`) {
+		t.Fatal("copy must use the displayed format")
+	}
+}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/aws"
+	"github.com/sst/sst/v3/pkg/prettyjson"
 )
 
 type view int
@@ -33,12 +34,14 @@ type App struct {
 	purge Purger
 	copy  Copier
 
-	view     view
-	group    string
-	request  string
-	cursor   map[view]int
-	scroll   int
-	showIO   bool
+	view    view
+	group   string
+	request string
+	cursor  map[view]int
+	scroll  int
+	showIO  bool
+	// Pretty JSON mode: decode JSON nested in strings and format JSON logs.
+	pretty   bool
 	follow   bool
 	editing  bool
 	filter   map[view]string
@@ -63,6 +66,7 @@ func NewApp(store *Store, now func() time.Time, purge Purger, copy Copier) *App 
 		filter:  map[view]string{},
 		dismiss: map[string]string{},
 		follow:  true,
+		pretty:  prettyjson.Enabled(),
 	}
 }
 
@@ -220,6 +224,13 @@ func (a *App) rune(r rune) {
 		}
 	case 'f':
 		a.follow = !a.follow
+	case 'J':
+		a.pretty = !a.pretty
+		if a.pretty {
+			a.flash("pretty JSON on")
+		} else {
+			a.flash("pretty JSON off")
+		}
 	case 'i':
 		if a.view == viewDetail {
 			a.showIO = !a.showIO
@@ -329,18 +340,18 @@ func (a *App) copySelection(r rune) {
 		}
 		switch r {
 		case 'y':
-			text, what = PrettyJSON(inv.Input), "input"
+			text, what = a.json(inv.Input), "input"
 		case 'Y':
-			text, what = PrettyJSON(inv.Output), "output"
+			text, what = a.json(inv.Output), "output"
 		case 'c':
-			text, what = strings.Join(inv.Logs, "\n"), "logs"
+			text, what = strings.Join(a.logLines(inv), "\n"), "logs"
 		}
 	case viewInvocations:
 		list := a.invocations()
 		if len(list) == 0 || r != 'y' {
 			return
 		}
-		text, what = PrettyJSON(list[a.cursor[viewInvocations]].Input), "input"
+		text, what = a.json(list[a.cursor[viewInvocations]].Input), "input"
 	default:
 		return
 	}
@@ -602,6 +613,29 @@ func (a *App) drawInvocations(screen tcell.Screen, y int) {
 	}
 }
 
+// json formats an input or output for display and copying.
+func (a *App) json(data []byte) string {
+	if a.pretty {
+		return prettyjson.FormatOr(data)
+	}
+	return PrettyJSON(data)
+}
+
+// logLines are an invocation's logs, with JSON pretty printed in pretty mode.
+func (a *App) logLines(inv *Invocation) []string {
+	if !a.pretty {
+		return inv.Logs
+	}
+	lines := make([]string, 0, len(inv.Logs))
+	for _, line := range inv.Logs {
+		if formatted, ok := prettyjson.FormatLine(line); ok {
+			line = formatted
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 // wrap splits text into lines no wider than width.
 func wrap(text string, width int) []string {
 	if width <= 0 {
@@ -644,20 +678,20 @@ func (a *App) detailLines(inv *Invocation) []styledLine {
 	}
 	if a.showIO {
 		add("input", styleTitle)
-		add(PrettyJSON(inv.Input), styleNormal)
+		add(a.json(inv.Input), styleNormal)
 		add("", styleNormal)
 		add("output", styleTitle)
 		if inv.Status == Running {
 			add("(running)", styleDim)
 		} else {
-			add(PrettyJSON(inv.Output), styleNormal)
+			add(a.json(inv.Output), styleNormal)
 		}
 		return lines
 	}
 	if len(inv.Logs) == 0 {
 		add("No logs.", styleDim)
 	}
-	for _, line := range inv.Logs {
+	for _, line := range a.logLines(inv) {
 		add(line, styleNormal)
 	}
 	return lines
@@ -742,7 +776,7 @@ func (a *App) drawFooter(screen tcell.Screen, y int) {
 		if a.showIO {
 			io = "i logs"
 		}
-		hints = []string{"j/k scroll", io, "y/Y copy in/out", "c copy logs", "f follow", "esc back"}
+		hints = []string{"j/k scroll", io, "J pretty json", "y/Y copy in/out", "c copy logs", "f follow", "esc back"}
 	case a.view == viewSearch:
 		hints = []string{"j/k move", "enter open", "ctrl-f edit", "esc back"}
 	}

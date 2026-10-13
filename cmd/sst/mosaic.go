@@ -166,6 +166,7 @@ func CmdMosaic(c *cli.Cli) error {
 		}
 	}
 	os.Setenv("SST_STAGE", p.App().Stage)
+	withPrettyJSON(c, nil)
 	slog.Info("mosaic", "project", p.PathRoot())
 
 	wg.Go(func() error {
@@ -259,6 +260,7 @@ func CmdMosaic(c *cli.Cli) error {
 			fmt.Sprintf("SST_SERVER=http://localhost:%v", server.Port),
 			"SST_STAGE="+p.App().Stage,
 		)
+		multiEnv = withPrettyJSON(c, multiEnv)
 		serverURL := fmt.Sprintf("http://localhost:%v", server.Port)
 		_, hasAWS := p.App().Providers["aws"]
 		showWorkers := p.App().Home == "cloudflare" && !hasAWS
