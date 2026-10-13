@@ -79,3 +79,42 @@ func TestEnabled(t *testing.T) {
 		t.Fatal("0 disables")
 	}
 }
+
+func TestFormatLinesTagsEachKind(t *testing.T) {
+	lines, ok := FormatLines([]byte(`{"s":"x","n":1,"b":true,"z":null}`))
+	if !ok {
+		t.Fatal("valid JSON must format")
+	}
+	kinds := map[string]Kind{}
+	for _, line := range lines {
+		for _, segment := range line {
+			kinds[segment.Text] = segment.Kind
+		}
+	}
+	want := map[string]Kind{`"s"`: Key, `"x"`: String, `1`: Number, `true`: Bool, `null`: Null, `{`: Punct}
+	for text, kind := range want {
+		if kinds[text] != kind {
+			t.Fatalf("%s tagged %v, want %v", text, kinds[text], kind)
+		}
+	}
+}
+
+func TestFormatLogLineKeepsThePrefixAsText(t *testing.T) {
+	lines, ok := FormatLogLine(`INFO {"a":1}`)
+	if !ok || lines[0][0] != (Segment{Kind: Text, Text: "INFO "}) {
+		t.Fatalf("got %+v", lines)
+	}
+}
+
+func TestANSIColoursAndHonoursNoColor(t *testing.T) {
+	lines, _ := FormatLines([]byte(`{"a":"b"}`))
+	t.Setenv("NO_COLOR", "")
+	coloured := ANSI(lines)
+	if !strings.Contains(coloured, "\x1b[36m\"a\"\x1b[39m") || !strings.Contains(coloured, "\x1b[32m\"b\"\x1b[39m") {
+		t.Fatalf("keys must be cyan and strings green: %q", coloured)
+	}
+	t.Setenv("NO_COLOR", "1")
+	if ANSI(lines) != Plain(lines) {
+		t.Fatal("NO_COLOR prints plain")
+	}
+}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/aws"
+	"github.com/sst/sst/v3/pkg/prettyjson"
 )
 
 type harness struct {
@@ -177,4 +178,43 @@ func TestPrettyJSONModeUnwrapsNestedJSONInDetail(t *testing.T) {
 	if !strings.Contains(h.copied[len(h.copied)-1], `"orderId": 42`) {
 		t.Fatal("copy must use the displayed format")
 	}
+}
+
+func TestWrapLineColoursSegmentsAndBreaksAtWidth(t *testing.T) {
+	line := prettyjson.Line{{Kind: prettyjson.Key, Text: `"abcdef"`}, {Kind: prettyjson.Text, Text: "xyz"}}
+	rows := wrapLine(line, 5, styleDanger)
+	if len(rows) != 3 {
+		t.Fatalf("11 runes at width 5 make 3 rows, got %+v", rows)
+	}
+	if rows[0][0].text != `"abcd` || rows[0][0].style != jsonStyles[prettyjson.Key] {
+		t.Fatalf("first row %+v", rows[0])
+	}
+	last := rows[2][len(rows[2])-1]
+	if last.text != "z" || last.style != styleDanger {
+		t.Fatalf("text segments take the base style, got %+v", last)
+	}
+}
+
+func TestPrettyModeColoursJSONInTheDetail(t *testing.T) {
+	h := newHarness(t)
+	h.app.pretty = true
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: "r1", Input: []byte(`{"orderId":42}`)})
+	h.key(tcell.KeyEnter)
+	h.key(tcell.KeyEnter)
+	h.press('i')
+	cells, width, _ := h.screen.GetContents()
+	text := h.text()
+	row := strings.Split(text, "\n")
+	for y, line := range row {
+		x := strings.Index(line, `"orderId": 42`)
+		if x < 0 {
+			continue
+		}
+		x = len([]rune(line[:x]))
+		if cells[y*width+x].Style != jsonStyles[prettyjson.Key] {
+			t.Fatal("keys must be coloured")
+		}
+		return
+	}
+	t.Fatalf("the input must show:\n%s", text)
 }

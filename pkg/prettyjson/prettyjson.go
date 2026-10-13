@@ -41,13 +41,11 @@ type object []member
 // Format pretty prints a JSON document, unwrapping JSON nested in strings.
 // It reports false when data is not a single JSON value.
 func Format(data []byte) (string, bool) {
-	value, ok := decodeAll(data)
+	lines, ok := FormatLines(data)
 	if !ok {
 		return "", false
 	}
-	var out strings.Builder
-	write(&out, unwrap(value, 0), 0)
-	return out.String(), true
+	return Plain(lines), true
 }
 
 // FormatOr pretty prints data, or returns it unchanged when it is not JSON.
@@ -62,28 +60,44 @@ func FormatOr(data []byte) string {
 // object or array after some text (`INFO {"a":1}`). Lines with no such JSON
 // are reported false.
 func FormatLine(line string) (string, bool) {
+	lines, ok := FormatLogLine(line)
+	if !ok {
+		return "", false
+	}
+	return Plain(lines), true
+}
+
+// FormatLines is Format as coloured segments, one Line per output row.
+func FormatLines(data []byte) ([]Line, bool) {
+	value, ok := decodeAll(data)
+	if !ok {
+		return nil, false
+	}
+	e := &emitter{}
+	e.value(unwrap(value, 0), 0)
+	return e.done(), true
+}
+
+// FormatLogLine is FormatLine as coloured segments; the text before the JSON
+// is a Text segment.
+func FormatLogLine(line string) ([]Line, bool) {
 	trimmed := strings.TrimSpace(line)
 	for start := 0; start < len(trimmed); start++ {
 		if trimmed[start] != '{' && trimmed[start] != '[' {
 			continue
 		}
 		value, ok := decodeAll([]byte(trimmed[start:]))
-		if !ok {
+		if !ok || !isContainer(value) {
 			continue
 		}
-		if !isContainer(value) {
-			continue
+		e := &emitter{}
+		if prefix := strings.TrimRight(trimmed[:start], " "); prefix != "" {
+			e.emit(Text, prefix+" ")
 		}
-		var out strings.Builder
-		prefix := strings.TrimRight(trimmed[:start], " ")
-		if prefix != "" {
-			out.WriteString(prefix)
-			out.WriteString(" ")
-		}
-		write(&out, unwrap(value, 0), 0)
-		return out.String(), true
+		e.value(unwrap(value, 0), 0)
+		return e.done(), true
 	}
-	return "", false
+	return nil, false
 }
 
 func isContainer(value interface{}) bool {
@@ -202,61 +216,151 @@ func unwrap(value interface{}, depth int) interface{} {
 	return value
 }
 
-func write(out *strings.Builder, value interface{}, level int) {
-	switch v := value.(type) {
-	case object:
-		if len(v) == 0 {
-			out.WriteString("{}")
-			return
-		}
-		out.WriteString("{\n")
-		for i, m := range v {
-			out.WriteString(strings.Repeat(indent, level+1))
-			writeString(out, m.key)
-			out.WriteString(": ")
-			write(out, m.value, level+1)
-			if i < len(v)-1 {
-				out.WriteString(",")
-			}
+// Kind is what a segment of formatted JSON is, for colouring.
+type Kind int
+
+const (
+	Punct Kind = iota
+	Key
+	String
+	Number
+	Bool
+	Null
+	// Text is not JSON: the log text before a JSON value.
+	Text
+)
+
+// Segment is a run of formatted output of one kind.
+type Segment struct {
+	Kind Kind
+	Text string
+}
+
+// Line is one row of formatted output.
+type Line []Segment
+
+// Plain joins lines without colour.
+func Plain(lines []Line) string {
+	var out strings.Builder
+	for i, line := range lines {
+		if i > 0 {
 			out.WriteString("\n")
 		}
-		out.WriteString(strings.Repeat(indent, level))
-		out.WriteString("}")
-	case []interface{}:
-		if len(v) == 0 {
-			out.WriteString("[]")
-			return
+		for _, segment := range line {
+			out.WriteString(segment.Text)
 		}
-		out.WriteString("[\n")
-		for i, item := range v {
-			out.WriteString(strings.Repeat(indent, level+1))
-			write(out, item, level+1)
-			if i < len(v)-1 {
-				out.WriteString(",")
-			}
+	}
+	return out.String()
+}
+
+// ANSI colours for each kind, from the terminal's own 16 colour palette.
+var ansiColors = map[Kind]string{
+	Punct:  "\x1b[90m",
+	Key:    "\x1b[36m",
+	String: "\x1b[32m",
+	Number: "\x1b[33m",
+	Bool:   "\x1b[35m",
+	Null:   "\x1b[35m",
+}
+
+// ANSI joins lines with terminal colours, or plain when NO_COLOR is set.
+func ANSI(lines []Line) string {
+	if os.Getenv("NO_COLOR") != "" {
+		return Plain(lines)
+	}
+	var out strings.Builder
+	for i, line := range lines {
+		if i > 0 {
 			out.WriteString("\n")
 		}
-		out.WriteString(strings.Repeat(indent, level))
-		out.WriteString("]")
-	case string:
-		writeString(out, v)
-	case json.Number:
-		out.WriteString(v.String())
-	case bool:
-		if v {
-			out.WriteString("true")
-		} else {
-			out.WriteString("false")
+		for _, segment := range line {
+			color, ok := ansiColors[segment.Kind]
+			if !ok {
+				out.WriteString(segment.Text)
+				continue
+			}
+			out.WriteString(color)
+			out.WriteString(segment.Text)
+			out.WriteString("\x1b[39m")
 		}
-	case nil:
-		out.WriteString("null")
+	}
+	return out.String()
+}
+
+type emitter struct {
+	lines []Line
+	line  Line
+}
+
+func (e *emitter) emit(kind Kind, text string) {
+	e.line = append(e.line, Segment{Kind: kind, Text: text})
+}
+
+func (e *emitter) newline(level int) {
+	e.lines = append(e.lines, e.line)
+	e.line = Line{}
+	if level > 0 {
+		e.emit(Punct, strings.Repeat(indent, level))
 	}
 }
 
-func writeString(out *strings.Builder, value string) {
+func (e *emitter) done() []Line {
+	return append(e.lines, e.line)
+}
+
+func (e *emitter) value(value interface{}, level int) {
+	switch v := value.(type) {
+	case object:
+		if len(v) == 0 {
+			e.emit(Punct, "{}")
+			return
+		}
+		e.emit(Punct, "{")
+		for i, m := range v {
+			e.newline(level + 1)
+			e.emit(Key, quote(m.key))
+			e.emit(Punct, ": ")
+			e.value(m.value, level+1)
+			if i < len(v)-1 {
+				e.emit(Punct, ",")
+			}
+		}
+		e.newline(level)
+		e.emit(Punct, "}")
+	case []interface{}:
+		if len(v) == 0 {
+			e.emit(Punct, "[]")
+			return
+		}
+		e.emit(Punct, "[")
+		for i, item := range v {
+			e.newline(level + 1)
+			e.value(item, level+1)
+			if i < len(v)-1 {
+				e.emit(Punct, ",")
+			}
+		}
+		e.newline(level)
+		e.emit(Punct, "]")
+	case string:
+		e.emit(String, quote(v))
+	case json.Number:
+		e.emit(Number, v.String())
+	case bool:
+		if v {
+			e.emit(Bool, "true")
+		} else {
+			e.emit(Bool, "false")
+		}
+	case nil:
+		e.emit(Null, "null")
+	}
+}
+
+func quote(value string) string {
 	var buf bytes.Buffer
 	encoder := json.NewEncoder(&buf)
 	encoder.SetEscapeHTML(false)
 	encoder.Encode(value)
-	out.WriteString(strings.TrimSuffix(buf.String(), "\n"))
+	return strings.TrimSuffix(buf.String(), "\n")
 }

@@ -613,7 +613,7 @@ func (a *App) drawInvocations(screen tcell.Screen, y int) {
 	}
 }
 
-// json formats an input or output for display and copying.
+// json formats an input or output for copying.
 func (a *App) json(data []byte) string {
 	if a.pretty {
 		return prettyjson.FormatOr(data)
@@ -621,50 +621,98 @@ func (a *App) json(data []byte) string {
 	return PrettyJSON(data)
 }
 
+// jsonLines formats an input or output for display, coloured in pretty mode.
+func (a *App) jsonLines(data []byte) []prettyjson.Line {
+	if a.pretty {
+		if lines, ok := prettyjson.FormatLines(data); ok {
+			return lines
+		}
+	}
+	return textLines(PrettyJSON(data), prettyjson.Text)
+}
+
 // logLines are an invocation's logs, with JSON pretty printed in pretty mode.
 func (a *App) logLines(inv *Invocation) []string {
-	if !a.pretty {
-		return inv.Logs
-	}
 	lines := make([]string, 0, len(inv.Logs))
+	for _, line := range a.coloredLogLines(inv) {
+		lines = append(lines, prettyjson.Plain([]prettyjson.Line{line}))
+	}
+	return lines
+}
+
+func (a *App) coloredLogLines(inv *Invocation) []prettyjson.Line {
+	lines := []prettyjson.Line{}
 	for _, line := range inv.Logs {
-		if formatted, ok := prettyjson.FormatLine(line); ok {
-			line = formatted
+		if a.pretty {
+			if formatted, ok := prettyjson.FormatLogLine(line); ok {
+				lines = append(lines, formatted...)
+				continue
+			}
 		}
-		lines = append(lines, line)
+		lines = append(lines, textLines(line, prettyjson.Text)...)
 	}
 	return lines
 }
 
-// wrap splits text into lines no wider than width.
-func wrap(text string, width int) []string {
-	if width <= 0 {
-		return []string{text}
-	}
-	var lines []string
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.ReplaceAll(line, "\t", "  ")
-		for utf8.RuneCountInString(line) > width {
-			runes := []rune(line)
-			lines = append(lines, string(runes[:width]))
-			line = string(runes[width:])
-		}
-		lines = append(lines, line)
+func textLines(text string, kind prettyjson.Kind) []prettyjson.Line {
+	var lines []prettyjson.Line
+	for _, row := range strings.Split(text, "\n") {
+		lines = append(lines, prettyjson.Line{{Kind: kind, Text: row}})
 	}
 	return lines
 }
 
-type styledLine struct {
+// jsonStyles colour pretty JSON in the pane.
+var jsonStyles = map[prettyjson.Kind]tcell.Style{
+	prettyjson.Punct:  tcell.StyleDefault.Foreground(tcell.ColorGray),
+	prettyjson.Key:    tcell.StyleDefault.Foreground(tcell.ColorTeal),
+	prettyjson.String: tcell.StyleDefault.Foreground(tcell.ColorGreen),
+	prettyjson.Number: tcell.StyleDefault.Foreground(tcell.ColorOlive),
+	prettyjson.Bool:   tcell.StyleDefault.Foreground(tcell.ColorPurple),
+	prettyjson.Null:   tcell.StyleDefault.Foreground(tcell.ColorPurple),
+}
+
+type span struct {
 	text  string
 	style tcell.Style
 }
 
+// styledLine is one screen row of the detail view.
+type styledLine []span
+
+// wrapLine styles a formatted line and breaks it into rows no wider than
+// width; text segments take base, JSON segments their kind's colour.
+// Segments never hold a newline: formatted output is split into Lines.
+func wrapLine(line prettyjson.Line, width int, base tcell.Style) []styledLine {
+	rows := []styledLine{{}}
+	used := 0
+	for _, segment := range line {
+		style, ok := jsonStyles[segment.Kind]
+		if !ok {
+			style = base
+		}
+		runes := []rune(strings.ReplaceAll(segment.Text, "\t", "  "))
+		for width > 0 && used+len(runes) > width {
+			take := width - used
+			rows[len(rows)-1] = append(rows[len(rows)-1], span{string(runes[:take]), style})
+			rows = append(rows, styledLine{})
+			runes, used = runes[take:], 0
+		}
+		rows[len(rows)-1] = append(rows[len(rows)-1], span{string(runes), style})
+		used += len(runes)
+	}
+	return rows
+}
+
 func (a *App) detailLines(inv *Invocation) []styledLine {
 	lines := []styledLine{}
-	add := func(text string, style tcell.Style) {
-		for _, line := range wrap(text, a.width) {
-			lines = append(lines, styledLine{line, style})
+	addLines := func(formatted []prettyjson.Line, base tcell.Style) {
+		for _, line := range formatted {
+			lines = append(lines, wrapLine(line, a.width, base)...)
 		}
+	}
+	add := func(text string, style tcell.Style) {
+		addLines(textLines(text, prettyjson.Text), style)
 	}
 	if inv.Status == Failed {
 		add(inv.ErrorType+": "+inv.ErrorMsg, styleDanger.Bold(true))
@@ -678,22 +726,20 @@ func (a *App) detailLines(inv *Invocation) []styledLine {
 	}
 	if a.showIO {
 		add("input", styleTitle)
-		add(a.json(inv.Input), styleNormal)
+		addLines(a.jsonLines(inv.Input), styleNormal)
 		add("", styleNormal)
 		add("output", styleTitle)
 		if inv.Status == Running {
 			add("(running)", styleDim)
 		} else {
-			add(a.json(inv.Output), styleNormal)
+			addLines(a.jsonLines(inv.Output), styleNormal)
 		}
 		return lines
 	}
 	if len(inv.Logs) == 0 {
 		add("No logs.", styleDim)
 	}
-	for _, line := range a.logLines(inv) {
-		add(line, styleNormal)
-	}
+	addLines(a.coloredLogLines(inv), styleNormal)
 	return lines
 }
 
@@ -725,7 +771,10 @@ func (a *App) drawDetail(screen tcell.Screen, y int) {
 	}
 	a.scroll = min(a.scroll, max(0, len(lines)-height))
 	for i := a.scroll; i < len(lines) && y < a.height-1; i++ {
-		a.text(screen, 0, y, lines[i].text, lines[i].style)
+		x := 0
+		for _, part := range lines[i] {
+			x = a.text(screen, x, y, part.text, part.style)
+		}
 		y++
 	}
 }
