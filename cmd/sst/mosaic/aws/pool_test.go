@@ -23,7 +23,7 @@ type fakes struct {
 func newTestPool(cfg PoolConfig) (*Pool, *fakes) {
 	f := &fakes{}
 	p := NewPool(cfg,
-		func(key poolKey, functionID string, id string) (runtime.Worker, error) {
+		func(key poolKey, functionID string, id string, env []string) (runtime.Worker, error) {
 			if f.fail {
 				return nil, io.ErrUnexpectedEOF
 			}
@@ -319,5 +319,36 @@ func TestAnnounceReturnsAHeldRequestOnce(t *testing.T) {
 	p.Complete(worker, "r1")
 	if _, ok := p.Announce(worker, "r1"); ok {
 		t.Fatal("a completed request must not be announced")
+	}
+}
+
+func TestWarmStartsAWorkerWithASourceEnvWithoutReenteringThePool(t *testing.T) {
+	var gotEnv []string
+	var p *Pool
+	p = NewPool(PoolConfig{Size: 2, Concurrency: 2, IdleTimeout: time.Hour, Warmup: 1},
+		func(key poolKey, functionID string, id string, env []string) (runtime.Worker, error) {
+			gotEnv = env
+			return &fakeWorker{id: id}, nil
+		},
+		func(w *pooledWorker) {},
+	)
+	p.quiet = 0
+	key, _ := p.Target("fnA", "nodejs22.x", "/bundle")
+	p.Register("srcA", "fnA", []string{"HANDLER_FN=a"})
+
+	done := make(chan struct{})
+	go func() {
+		ready(p, key)
+		// The pool must still be usable after warming.
+		p.Source("srcA")
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("warming a worker deadlocked the pool")
+	}
+	if len(gotEnv) != 1 || gotEnv[0] != "HANDLER_FN=a" {
+		t.Fatalf("the warm worker must start with the source env, got %v", gotEnv)
 	}
 }

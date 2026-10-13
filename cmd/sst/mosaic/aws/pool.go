@@ -90,7 +90,9 @@ type keyState struct {
 // StartWorker starts a process for `id` that runs the bundle behind `key`.
 // `functionID` is one of the functions the pool serves, whose build output
 // and environment seed the worker.
-type StartWorker func(key poolKey, functionID string, id string) (runtime.Worker, error)
+// The pool calls it with its lock held, so it must not call back into the
+// pool; `env` is the forwarded environment of a stub of the function.
+type StartWorker func(key poolKey, functionID string, id string, env []string) (runtime.Worker, error)
 
 // StopWorker stops a worker the pool no longer wants.
 type StopWorker func(w *pooledWorker)
@@ -549,7 +551,7 @@ func (p *Pool) startWorker(key poolKey, ks *keyState) *pooledWorker {
 	// up its log scanner, which looks the worker up by id.
 	p.workers[w.ID] = w
 	ks.workers = append(ks.workers, w)
-	worker, err := p.start(key, functionID, w.ID)
+	worker, err := p.start(key, functionID, w.ID, p.seedEnv(functionID))
 	if err != nil || worker == nil {
 		p.remove(w)
 		return nil
@@ -594,4 +596,20 @@ func splitTagged(line string) (requestID string, text string, tagged bool) {
 		return "", line, false
 	}
 	return line[1 : end+1], line[end+2:], true
+}
+
+// seedEnv is the process environment of a new worker: the forwarded env of a
+// registered stub of the function, else of any stub, so module-scope reads
+// see realistic values. Per-invocation env arrives with each request. The
+// caller holds p.mu.
+func (p *Pool) seedEnv(functionID string) []string {
+	for _, info := range p.sources {
+		if info.FunctionID == functionID {
+			return append([]string{}, info.Env...)
+		}
+	}
+	for _, info := range p.sources {
+		return append([]string{}, info.Env...)
+	}
+	return nil
 }

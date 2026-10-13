@@ -171,7 +171,7 @@ func (r *poolRuntime) fail(inv *pendingInvocation, message bridge.MessageType, e
 // startWorker is the pool's StartWorker: it runs the bundle with the pooled
 // entry point, seeded with the environment of one of the functions it serves,
 // and forwards its log lines under the request they belong to.
-func (r *poolRuntime) startWorker(key poolKey, functionID string, id string) (runtime.Worker, error) {
+func (r *poolRuntime) startWorker(key poolKey, functionID string, id string, env []string) (runtime.Worker, error) {
 	build := r.build(functionID)
 	if build == nil {
 		return nil, errBuildFailed
@@ -180,7 +180,9 @@ func (r *poolRuntime) startWorker(key poolKey, functionID string, id string) (ru
 	if !ok {
 		return nil, errBuildFailed
 	}
-	env := r.seedEnv(functionID)
+	if env == nil {
+		env = ApplyDevEnvOverrides(nil, os.Environ(), flag.SST_DEV_ENV_OVERRIDES)
+	}
 	worker, err := r.input.project.Runtime.Run(r.ctx, &runtime.RunInput{
 		CfgPath:    r.input.project.PathConfig(),
 		Runtime:    target.Runtime,
@@ -229,23 +231,6 @@ func (r *poolRuntime) stopWorker(w *pooledWorker) {
 	if w.Worker != nil {
 		w.Worker.Stop()
 	}
-}
-
-// seedEnv is the process environment of a new worker: the forwarded env of
-// any registered stub of the function, so module-scope reads see realistic
-// values. Per-invocation env arrives with each request.
-func (r *poolRuntime) seedEnv(functionID string) []string {
-	r.pool.mu.Lock()
-	defer r.pool.mu.Unlock()
-	for _, info := range r.pool.sources {
-		if info.FunctionID == functionID {
-			return append([]string{}, info.Env...)
-		}
-	}
-	for _, info := range r.pool.sources {
-		return append([]string{}, info.Env...)
-	}
-	return ApplyDevEnvOverrides(nil, os.Environ(), flag.SST_DEV_ENV_OVERRIDES)
 }
 
 // workerDied handles a pooled worker process exit.
