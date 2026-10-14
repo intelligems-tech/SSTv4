@@ -4,7 +4,7 @@
   "description": "Intelligems fork of the SST v4 CLI: pooled local workers for prebuilt bundles and prebuilt S3 code packages for functions.",
   "type": "module",
   "sideEffects": false,
-  "version": "0.0.0",
+  "version": "4.17.2-ig.1",
   "main": "./dist/index.js",
   "repository": {
     "type": "git",

@@ -8,7 +8,9 @@ import metafile from "../../../dist/metadata.json";
 import artifacts from "../../../dist/artifacts.json";
 import pkg from "../package.json";
 const nextPkg = JSON.parse(JSON.stringify(pkg));
-nextPkg.version = metafile.version;
+nextPkg.version = metafile.version.endsWith("-ig.1")
+  ? metafile.version
+  : `${metafile.version}-ig.1`;
 nextPkg.optionalDependencies = nextPkg.optionalDependencies || {};
 const snapshot = nextPkg.version.includes("0.0.0");
 if (snapshot) {
