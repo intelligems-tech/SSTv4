@@ -46,7 +46,8 @@ import { Permission, permission } from "./permission.js";
 import { Vpc } from "./vpc.js";
 import { Image } from "@pulumi/docker-build";
 import { rpc } from "../rpc/rpc.js";
-import { parseRoleArn, splitQualifiedFunctionArn } from "./helpers/arn.js";
+import { splitQualifiedFunctionArn } from "./helpers/arn.js";
+import { resolveFunctionCode } from "./helpers/function-code.js";
 import { RandomBytes } from "@pulumi/random";
 import { lazy } from "../../util/lazy.js";
 import { Efs } from "./efs.js";
@@ -399,6 +400,58 @@ export interface FunctionArgs {
    * ```
    */
   bundle?: Input<string>;
+  /**
+   * Deploy a code package that already exists in S3 instead of building and
+   * uploading one for this function. `handler` names the entry inside that
+   * package.
+   *
+   * :::caution
+   * Cannot be combined with `nodejs`, `python`, `injections`, `copyFiles` or
+   * `hook`. SST does not build, zip or upload anything for the function.
+   * :::
+   *
+   * In `sst dev` the package is not used: the Live bridge is deployed and
+   * `bundle` names the local directory to run.
+   *
+   * @example
+   * ```js
+   * {
+   *   code: {
+   *     s3Bucket: "my-artifacts",
+   *     s3Key: "backend/abc123.zip",
+   *     sourceCodeHash: "base64-sha256-of-the-zip"
+   *   },
+   *   handler: "index.handler",
+   *   bundle: ".sst/dev-bundle"
+   * }
+   * ```
+   */
+  code?: Input<{
+    /**
+     * The bucket that holds the package.
+     */
+    s3Bucket: Input<string>;
+    /**
+     * The key of the package inside the bucket.
+     */
+    s3Key: Input<string>;
+    /**
+     * A specific version of the object, for versioned buckets.
+     */
+    s3ObjectVersion?: Input<string>;
+    /**
+     * Base64 SHA-256 of the package. Drives the code diff: a new hash updates
+     * the function, the same hash leaves it alone.
+     */
+    sourceCodeHash?: Input<string>;
+  }>;
+  /**
+   * @internal
+   * `sst dev` only. Functions that share the same `bundle` and set
+   * `pool: "bundle"` run on one pool of local Node workers instead of one
+   * worker per Lambda instance.
+   */
+  pool?: Input<"bundle">;
   /**
    * Path to the handler for the function.
    *
@@ -1714,7 +1767,7 @@ export class Function extends Component implements Link.Linkable {
   private constructorName: string;
   private durable: boolean;
   private function: Output<lambda.Function>;
-  private role: iam.Role;
+  private role: iam.Role | undefined;
   private logGroup: Output<cloudwatch.LogGroup | undefined>;
   private urlEndpoint: Output<string | undefined>;
   private eventInvokeConfig?: lambda.FunctionEventInvokeConfig;
@@ -1777,6 +1830,8 @@ export class Function extends Component implements Link.Linkable {
     const policies = output(args.policies ?? []);
     const vpc = normalizeVpc();
     const nodejs = normalizeNodeJs();
+    const pool = output(args.pool);
+    const codeMode = normalizeCodeMode();
 
     const linkData = buildLinkData();
     const linkPermissions = buildLinkPermissions();
@@ -1810,10 +1865,13 @@ export class Function extends Component implements Link.Linkable {
         Object.fromEntries(input.map((item) => [item.name, item.properties])),
       ),
       copyFiles,
-      properties: output({ nodejs, python: args.python }).apply((val) => ({
-        ...(val.nodejs || val.python),
-        architecture,
-      })),
+      properties: output({ nodejs, python: args.python, pool }).apply(
+        (val) => ({
+          ...(val.nodejs || val.python),
+          architecture,
+          pool: val.pool,
+        }),
+      ),
       dev,
     });
 
@@ -1860,6 +1918,30 @@ export class Function extends Component implements Link.Linkable {
     function normalizeDev() {
       return all([args.dev, args.live]).apply(
         ([d, l]) => $dev && d !== false && l !== false,
+      );
+    }
+
+    function normalizeCodeMode() {
+      return all([
+        dev,
+        output(args.code),
+        output(args.bundle),
+        nodejs,
+        output(args.python),
+        injections,
+        copyFiles,
+      ]).apply(([dev, code, bundle, nodejs, python, injections, copyFiles]) =>
+        resolveFunctionCode({
+          name,
+          dev,
+          code,
+          bundle,
+          nodejs,
+          python,
+          injections,
+          copyFiles,
+          hasPostbuild: Boolean(args.hook?.postbuild),
+        }),
       );
     }
 
@@ -2088,10 +2170,19 @@ export class Function extends Component implements Link.Linkable {
     }
 
     function buildHandler() {
-      return all([runtime, dev, isContainer]).apply(
-        async ([runtime, dev, isContainer]) => {
-          if (dev) {
+      return all([runtime, dev, isContainer, codeMode, args.handler]).apply(
+        async ([runtime, dev, isContainer, codeMode, handler]) => {
+          if (codeMode.mode === "dev-bridge") {
             return resolveDevBridge();
+          }
+
+          // The package is already in S3: nothing to build.
+          if (codeMode.mode === "prebuilt") {
+            return {
+              handler,
+              bundle: undefined,
+              sourcemaps: undefined,
+            };
           }
 
           const buildResult = buildInput.apply(async (input) => {
@@ -2228,12 +2319,9 @@ export class Function extends Component implements Link.Linkable {
 
     function createRole() {
       if (args.role) {
-        return iam.Role.get(
-          `${name}Role`,
-          output(args.role).apply(parseRoleArn).roleName,
-          {},
-          { parent },
-        );
+        // An existing role goes to the Lambda function as its ARN. Reading
+        // it would add a resource, and a state checkpoint, per function.
+        return undefined;
       }
 
       const policy = all([args.permissions || [], linkPermissions, dev]).apply(
@@ -2406,12 +2494,18 @@ export class Function extends Component implements Link.Linkable {
       //       b/c the folder contains node_modules. And pnpm node_modules
       //       contains symlinks. Pulumi cannot zip symlinks correctly.
       //       We will zip the folder ourselves.
+      // A container image has no zip, and a prebuilt package is already in
+      // S3: nothing to zip or upload in either case.
+      const skipZip = all([isContainer, codeMode]).apply(
+        ([isContainer, codeMode]) =>
+          isContainer || codeMode.mode === "prebuilt",
+      );
       return all([
         bundle,
         wrapper,
         sourcemaps,
         copyFiles,
-        isContainer,
+        skipZip,
         logGroup.apply((l) => l?.arn),
         dev,
         region,
@@ -2421,12 +2515,14 @@ export class Function extends Component implements Link.Linkable {
           wrapper,
           sourcemaps,
           copyFiles,
-          isContainer,
+          skipZip,
           logGroupArn,
           dev,
           regionName,
         ]) => {
-          if (isContainer) return;
+          if (skipZip || bundle === undefined) return;
+          // Narrowed copy: the nested createCode() cannot see the guard above.
+          const bundleDir: string = bundle;
 
           if (dev) {
             const cacheKey = `${regionName}:${bundle}`;
@@ -2447,7 +2543,7 @@ export class Function extends Component implements Link.Linkable {
               $cli.paths.work,
               "artifacts",
               dev
-                ? `dev-bridge-${regionName}-${logicalName(path.basename(bundle))}`
+                ? `dev-bridge-${regionName}-${logicalName(path.basename(bundleDir))}`
                 : name,
               "code.zip",
             );
@@ -2476,7 +2572,7 @@ export class Function extends Component implements Link.Linkable {
 
               for (const item of [
                 {
-                  from: bundle,
+                  from: bundleDir,
                   to: ".",
                   isDir: true,
                 },
@@ -2492,7 +2588,7 @@ export class Function extends Component implements Link.Linkable {
                   cwd: item.from,
                   dot: true,
                   ignore:
-                    sourcemaps?.map((item) => path.relative(bundle, item)) ||
+                    sourcemaps?.map((item) => path.relative(bundleDir, item)) ||
                     [],
                 });
                 files.push(
@@ -2547,7 +2643,7 @@ export class Function extends Component implements Link.Linkable {
 
             return new s3.BucketObjectv2(
               dev
-                ? `DevBridgeCode${logicalName(regionName)}${logicalName(path.basename(bundle))}`
+                ? `DevBridgeCode${logicalName(regionName)}${logicalName(path.basename(bundleDir))}`
                 : `${name}Code`,
               {
                 key: dev
@@ -2595,6 +2691,7 @@ export class Function extends Component implements Link.Linkable {
         zipAsset,
         args.concurrency,
         dev,
+        codeMode,
       ]).apply(
         ([
           logging,
@@ -2604,6 +2701,7 @@ export class Function extends Component implements Link.Linkable {
           zipAsset,
           concurrency,
           dev,
+          codeMode,
         ]) => {
           // This is a hack to avoid handler being marked as having propertyDependencies.
           // There is an unresolved bug in pulumi that causes issues when it does
@@ -2666,15 +2764,27 @@ export class Function extends Component implements Link.Linkable {
                       ],
                     },
                   }
-                : {
-                    packageType: "Zip",
-                    s3Bucket: zipAsset!.bucket,
-                    s3Key: zipAsset!.key,
-                    handler: unsecret(handler),
-                    runtime: runtime.apply((v) =>
-                      v === "go" || v === "rust" ? "provided.al2023" : v,
-                    ),
-                  }),
+                : codeMode.mode === "prebuilt"
+                  ? {
+                      packageType: "Zip",
+                      s3Bucket: codeMode.s3Bucket,
+                      s3Key: codeMode.s3Key,
+                      s3ObjectVersion: codeMode.s3ObjectVersion,
+                      sourceCodeHash: codeMode.sourceCodeHash,
+                      handler: unsecret(handler),
+                      runtime: runtime.apply((v) =>
+                        v === "go" || v === "rust" ? "provided.al2023" : v,
+                      ),
+                    }
+                  : {
+                      packageType: "Zip",
+                      s3Bucket: zipAsset!.bucket,
+                      s3Key: zipAsset!.key,
+                      handler: unsecret(handler),
+                      runtime: runtime.apply((v) =>
+                        v === "go" || v === "rust" ? "provided.al2023" : v,
+                      ),
+                    }),
             },
             { parent },
           );
@@ -2945,7 +3055,8 @@ export class Function extends Component implements Link.Linkable {
   public get nodes() {
     return {
       /**
-       * The IAM Role the function will use.
+       * The IAM Role the function will use, or `undefined` when an existing
+       * `role` was passed in.
        */
       role: this.role,
       /**

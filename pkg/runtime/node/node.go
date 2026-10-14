@@ -223,27 +223,8 @@ var EDITOR_ENV = []string{
 }
 
 func (r *Runtime) Run(ctx context.Context, input *runtime.RunInput) (runtime.Worker, error) {
-	cmd := process.Command(
-		"node",
-		"--enable-source-maps",
-		"--no-warnings",
-		filepath.Join(
-			path.ResolvePlatformDir(input.CfgPath),
-			"/dist/nodejs-runtime/index.js",
-		),
-		filepath.Join(input.Build.Out, input.Build.Handler),
-		input.WorkerID,
-	)
-	cmd.Env = input.Env
-	cmd.Env = append(cmd.Env, "NODE_OPTIONS="+os.Getenv("NODE_OPTIONS"))
-	for _, key := range EDITOR_ENV {
-		if value := os.Getenv(key); value != "" {
-			cmd.Env = append(cmd.Env, key+"="+value)
-		}
-	}
-	cmd.Env = append(cmd.Env, "AWS_LAMBDA_RUNTIME_API="+input.Server)
-	slog.Info("starting worker", "server", input.Server)
-	cmd.Dir = input.Build.Out
+	cmd := buildCommand(input, os.Getenv)
+	slog.Info("starting worker", "server", input.Server, "pooled", input.Pool != nil)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 	cmd.Start()
@@ -303,4 +284,48 @@ func (r *Runtime) ShouldRebuild(functionID string, file string) bool {
 	}
 
 	return false
+}
+
+// buildCommand assembles the worker process. A pooled worker runs the pooled
+// entry point with a concurrency argument, a capped heap, and source maps
+// only when asked for, because every worker pays for them.
+func buildCommand(input *runtime.RunInput, getenv func(string) string) *exec.Cmd {
+	platform := path.ResolvePlatformDir(input.CfgPath)
+	args := []string{}
+	if input.Pool == nil || input.Pool.SourceMaps {
+		args = append(args, "--enable-source-maps")
+	}
+	args = append(args, "--no-warnings")
+	if input.Pool != nil {
+		args = append(args,
+			filepath.Join(platform, "/dist/nodejs-runtime/pool.js"),
+			filepath.Join(input.Build.Out, input.Build.Handler),
+			input.WorkerID,
+			strconv.Itoa(input.Pool.Concurrency),
+		)
+	} else {
+		args = append(args,
+			filepath.Join(platform, "/dist/nodejs-runtime/index.js"),
+			filepath.Join(input.Build.Out, input.Build.Handler),
+			input.WorkerID,
+		)
+	}
+	cmd := process.Command("node", args...)
+	cmd.Env = input.Env
+	nodeOptions := getenv("NODE_OPTIONS")
+	if input.Pool != nil && input.Pool.MaxHeapMB > 0 {
+		nodeOptions = strings.TrimSpace(nodeOptions + " --max-old-space-size=" + strconv.Itoa(input.Pool.MaxHeapMB))
+	}
+	cmd.Env = append(cmd.Env, "NODE_OPTIONS="+nodeOptions)
+	for _, key := range EDITOR_ENV {
+		if value := getenv(key); value != "" {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
+	cmd.Env = append(cmd.Env, "AWS_LAMBDA_RUNTIME_API="+input.Server)
+	if input.Pool != nil && input.Pool.DebugMemory {
+		cmd.Env = append(cmd.Env, "SST_DEBUG_MEMORY=true")
+	}
+	cmd.Dir = input.Build.Out
+	return cmd
 }

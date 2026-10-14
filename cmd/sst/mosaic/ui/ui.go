@@ -49,13 +49,16 @@ type UI struct {
 	timing     map[string]time.Time
 	parents    map[string]string
 	workerTime map[string]time.Time
-	complete   *project.CompleteEvent
-	footer     *footer
-	buffer     []interface{}
-	hasBlank   bool
-	hasHeader  bool
-	options    *Options
-	log        *os.File
+	// Handler a pooled request runs, by request id, while it runs.
+	handlers  map[string]invocationHandler
+	rollup    *rollup
+	complete  *project.CompleteEvent
+	footer    *footer
+	buffer    []interface{}
+	hasBlank  bool
+	hasHeader bool
+	options   *Options
+	log       *os.File
 }
 
 type Options struct {
@@ -103,6 +106,7 @@ func New(ctx context.Context, options ...Option) *UI {
 	slog.Info("initializing ui", "isTTY", isTTY)
 	result := &UI{
 		workerTime: map[string]time.Time{},
+		handlers:   map[string]invocationHandler{},
 		hasBlank:   false,
 		options:    opts,
 	}
@@ -151,6 +155,7 @@ func (u *UI) blank() {
 }
 
 func (u *UI) reset() {
+	u.rollup = newRollup()
 	u.complete = nil
 	u.parents = map[string]string{}
 	u.dedupe = map[string]bool{}
@@ -203,27 +208,31 @@ func (u *UI) Event(unknown interface{}) {
 		u.printEvent(TEXT_DANGER, fmt.Sprintf("%-11s", "Missing"), fmt.Sprintf("Dev command not configured for the \"%s\" task. Set `dev.command` to configure how the task works in `sst dev`.", evt.Name))
 
 	case *aws.FunctionInvokedEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		if evt.Handler != "" || evt.Label != "" {
+			u.handlers[evt.RequestID] = invocationHandler{key: evt.Handler, label: evt.Label}
+		}
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		u.workerTime[evt.WorkerID] = time.Now()
-		u.printEvent(GetColor(evt.WorkerID), TEXT_NORMAL_BOLD.Render(fmt.Sprintf("%-11s", "Invoke")), u.functionName(evt.FunctionID))
+		u.printEvent(GetColor(evt.WorkerID), TEXT_NORMAL_BOLD.Render(fmt.Sprintf("%-11s", "Invoke")), u.invocationName(evt))
 
 	case *aws.FunctionResponseEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		defer delete(u.handlers, evt.RequestID)
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		duration := time.Since(u.workerTime[evt.WorkerID]).Round(time.Millisecond)
 		formattedDuration := fmt.Sprintf("took %.9s", fmt.Sprintf("+%v", duration))
-		u.printEvent(GetColor(evt.WorkerID), "Done", formattedDuration)
+		u.printEvent(GetColor(evt.WorkerID), "Done", DurationStyle(duration).Render(formattedDuration))
 
 	case *aws.FunctionLogEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		duration := time.Since(u.workerTime[evt.WorkerID]).Round(time.Millisecond)
 		formattedDuration := fmt.Sprintf("%.9s", fmt.Sprintf("+%v", duration))
-		u.printEvent(GetColor(evt.WorkerID), formattedDuration, u.formatFunctionLogLine(evt.Line))
+		u.printFunctionLog(GetColor(evt.WorkerID), formattedDuration, evt.Line)
 
 	case *aws.FunctionBuildEvent:
 		if !u.matchFilter(evt.FunctionID) {
@@ -239,7 +248,8 @@ func (u *UI) Event(unknown interface{}) {
 		u.printEvent(TEXT_SUCCESS, "Build", u.functionName(evt.FunctionID))
 
 	case *aws.FunctionErrorEvent:
-		if !u.matchFilter(evt.FunctionID) {
+		defer delete(u.handlers, evt.RequestID)
+		if !u.matchInvocation(evt.FunctionID, evt.RequestID) {
 			return
 		}
 		u.printEvent(GetColor(evt.WorkerID), TEXT_DANGER.Render(fmt.Sprintf("%-11s", "Error")), u.functionName(evt.FunctionID))
@@ -341,6 +351,9 @@ func (u *UI) Event(unknown interface{}) {
 		}
 
 		duration := time.Since(u.timing[evt.Metadata.URN]).Round(time.Millisecond)
+		if u.rollupOutputs(evt, duration) {
+			return
+		}
 		if evt.Metadata.Op == apitype.OpSame && u.mode == ProgressModeRefresh {
 			u.printProgress(
 				TEXT_SUCCESS,
@@ -430,6 +443,7 @@ func (u *UI) Event(unknown interface{}) {
 			break
 		}
 
+		u.printRollupSummary()
 		u.blank()
 		if len(evt.Errors) == 0 && evt.Finished {
 			u.print(TEXT_SUCCESS_BOLD.Render(IconCheck))

@@ -77,6 +77,17 @@ type BuildOutput struct {
 	Sourcemaps []string `json:"sourcemaps"`
 }
 
+// PoolRun is set when the worker serves a pool of functions that share one
+// prebuilt bundle. The runtime then starts its pooled entry point, which
+// runs several invocations at once and takes per-invocation env from the
+// Runtime API instead of its process environment.
+type PoolRun struct {
+	Concurrency int
+	MaxHeapMB   int
+	SourceMaps  bool
+	DebugMemory bool
+}
+
 type RunInput struct {
 	CfgPath    string
 	Runtime    string
@@ -85,6 +96,7 @@ type RunInput struct {
 	WorkerID   string
 	Build      *BuildOutput
 	Env        []string
+	Pool       *PoolRun
 }
 
 type Collection struct {

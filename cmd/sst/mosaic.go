@@ -166,6 +166,7 @@ func CmdMosaic(c *cli.Cli) error {
 		}
 	}
 	os.Setenv("SST_STAGE", p.App().Stage)
+	withPrettyJSON(c, nil)
 	slog.Info("mosaic", "project", p.PathRoot())
 
 	wg.Go(func() error {
@@ -259,9 +260,12 @@ func CmdMosaic(c *cli.Cli) error {
 			fmt.Sprintf("SST_SERVER=http://localhost:%v", server.Port),
 			"SST_STAGE="+p.App().Stage,
 		)
+		multiEnv = withPrettyJSON(c, multiEnv)
 		serverURL := fmt.Sprintf("http://localhost:%v", server.Port)
 		_, hasAWS := p.App().Providers["aws"]
 		showWorkers := p.App().Home == "cloudflare" && !hasAWS
+		handlers := startHandlerCatalog(c.Context)
+		startDevStatus(c.Context, multi, p.App().Stage)
 		fnTitle := "Functions"
 		fnFilter := "function"
 		if showWorkers {
@@ -291,7 +295,7 @@ func CmdMosaic(c *cli.Cli) error {
 			ListOptions: func() []multiplexer.FilterOption {
 				completed, err := dev.Completed(c.Context, serverURL)
 				if err != nil || completed == nil {
-					return nil
+					return handlers.Options()
 				}
 				var options []multiplexer.FilterOption
 				for _, r := range completed.Resources {
@@ -310,10 +314,14 @@ func CmdMosaic(c *cli.Cli) error {
 						})
 					}
 				}
-				return options
+				return append(options, handlers.Options()...)
 			},
 			Env: append(multiEnv, "SST_LOG="+p.PathLog("ui-function")),
 		})
+		multi.AddProcess(invocationsPane(currentExecutable, multiEnv, p.PathLog("ui-invocations")))
+		multi.AddProcess(queuesPane(currentExecutable, multiEnv, p.PathLog("ui-queues")))
+		multi.AddProcess(cronsPane(currentExecutable, multiEnv, p.PathLog("ui-crons")))
+		multi.AddProcess(stepFunctionsPane(currentExecutable, multiEnv, p.PathLog("ui-stepfunctions")))
 		defer func() {
 			multi.Exit()
 		}()

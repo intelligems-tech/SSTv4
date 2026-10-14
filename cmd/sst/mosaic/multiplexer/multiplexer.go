@@ -48,6 +48,8 @@ type Multiplexer struct {
 	filterScroll    int
 	filterSearching bool
 	filterQuery     string
+
+	status Status
 }
 
 type FilterOption struct {
@@ -156,6 +158,11 @@ func (s *Multiplexer) Start() {
 				shouldBreak = true
 				return
 
+			case *EventStatus:
+				s.status = evt.Status
+				s.draw()
+				return
+
 			case *EventCheckFilter:
 				for _, p := range s.processes {
 					if p.Key != evt.PaneKey || !p.Filterable {
@@ -210,6 +217,9 @@ func (s *Multiplexer) Start() {
 				break
 
 			case *tcell.EventMouse:
+				if s.forwardMouse(selected, evt) {
+					return
+				}
 				if evt.Buttons()&tcell.WheelUp != 0 {
 					s.scrollUp(3)
 					return

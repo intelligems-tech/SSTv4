@@ -9,6 +9,7 @@ bun build ./functions/cf-static-site-router-worker/index.ts --target=node --outd
 bun build ./functions/cf-ssr-site-router-worker/index.ts --target=node --outdir ./dist/cf-ssr-site-router-worker/
 bun build ./functions/nodejs-runtime/index.ts --target=node --outdir ./dist/nodejs-runtime/
 bun build ./functions/nodejs-runtime/loop.ts --target=node --outdir ./dist/nodejs-runtime/
+bun build ./functions/nodejs-runtime/pool.ts --target=node --outdir ./dist/nodejs-runtime/
 GOARCH=amd64 GOOS=linux go build -trimpath -buildvcs=false -mod=readonly -ldflags="-buildid=" -o ./dist/bridge/bootstrap ./functions/bridge
 node ./scripts/build.mjs
 
@@ -22,6 +23,9 @@ cp ./functions/python-runtime/index.py ./dist/python-runtime/index.py
 mkdir -p ./dist/dockerfiles/
 cp ./functions/docker/python.Dockerfile ./dist/dockerfiles/python.Dockerfile
 
+# The bridge-task image needs Docker and is only used by sst.aws.Task.
+# SKIP_BRIDGE_TASK=1 builds everything else on a machine without Docker.
+if [ "${SKIP_BRIDGE_TASK:-}" != "1" ]; then
 cd ./support/bridge-task
 mkdir -p build/amd64 build/arm64
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -mod=readonly -ldflags="-buildid=" -o build/amd64/main .
@@ -43,5 +47,6 @@ docker buildx build \
   -t ghcr.io/anomalyco/sst/bridge-task:latest \
   $([ "$DOCKER_PUSH" = "true" ] && echo "--push") \
   build
+fi
 
 cd $ORIGINAL_DIR

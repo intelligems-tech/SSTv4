@@ -58,5 +58,8 @@
   "overrides": {
     "string-width": "4.2.3",
     "google-protobuf": "3.21.2"
+  },
+  "patchedDependencies": {
+    "@pulumi/pulumi@3.215.0": "patches/@pulumi%2Fpulumi@3.215.0.patch"
   }
 }

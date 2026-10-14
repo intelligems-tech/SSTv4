@@ -466,6 +466,7 @@ var root = &cli.Command{
 				}, "\n"),
 			},
 			Flags: []cli.Flag{
+				prettyJSONFlag,
 				{
 					Name: "mode",
 					Type: "string",
