@@ -39,3 +39,13 @@ func TestEnvMapLaterEntriesWin(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestEnvKeysListsDistinctKeysInOrder(t *testing.T) {
+	got := envKeys([]string{"HANDLER_FN=a", "URL=x=y", "HANDLER_FN=b", "=bad", "EMPTY="})
+	if got != "HANDLER_FN,URL,EMPTY" {
+		t.Fatalf("got %q", got)
+	}
+	if envKeys(nil) != "" {
+		t.Fatalf("nil env must have no keys")
+	}
+}

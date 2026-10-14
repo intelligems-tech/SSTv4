@@ -190,7 +190,7 @@ func (r *poolRuntime) startWorker(key poolKey, functionID string, id string, env
 		WorkerID:   id,
 		FunctionID: functionID,
 		Build:      build,
-		Env:        append(env, "SST_POOL=bundle"),
+		Env:        poolWorkerEnv(env),
 		Pool: &runtime.PoolRun{
 			Concurrency: r.cfg.Concurrency,
 			MaxHeapMB:   r.cfg.MaxHeapMB,
@@ -224,6 +224,15 @@ func (r *poolRuntime) startWorker(key poolKey, functionID string, id string, env
 		r.stopped <- id
 	}()
 	return worker, nil
+}
+
+// poolWorkerEnv is a pooled worker's process environment. The seed belongs to
+// one function, but the worker serves all of them, so its keys are listed in
+// SST_POOL_SEED_KEYS: the worker hides them from invocations, which each
+// carry their own function's full environment (see pool-env.ts).
+func poolWorkerEnv(seed []string) []string {
+	env := append([]string{}, seed...)
+	return append(env, "SST_POOL=bundle", "SST_POOL_SEED_KEYS="+envKeys(seed))
 }
 
 func (r *poolRuntime) stopWorker(w *pooledWorker) {

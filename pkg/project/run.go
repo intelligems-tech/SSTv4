@@ -36,6 +36,12 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	log := slog.Default().With("service", "project.run")
 	log.Info("running stack command", "cmd", input.Command)
 
+	if input.Command == "refresh" {
+		if _, err := refreshArguments(input); err != nil {
+			return err
+		}
+	}
+
 	if p.app.Protect && input.Command == "remove" {
 		return ErrProtectedStage
 	}
@@ -330,7 +336,11 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 	case "diff":
 		args = append([]string{"preview"}, args...)
 	case "refresh":
-		args = append([]string{"refresh", "--yes", "--run-program"}, args...)
+		refreshArgs, err := refreshArguments(input)
+		if err != nil {
+			return err
+		}
+		args = append(refreshArgs, args...)
 	case "deploy":
 		args = append([]string{"up", "--yes", "-f"}, args...)
 	case "remove":

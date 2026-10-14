@@ -59,6 +59,77 @@ describe("createInvocationEnv", () => {
     expect(env.baseEnv.LATE).toBe("x");
     expect(env.current()).toBeUndefined();
   });
+
+  it("does not leak an earlier invocation's keys into a later one", async () => {
+    const env = createInvocationEnv({ SST_POOL: "bundle" });
+    restores.push(env.install());
+
+    const a = { HANDLER_FN: "x" };
+    env.setLatest(a);
+    await env.run({ requestID: "a", env: a }, async () => {
+      expect(process.env.HANDLER_FN).toBe("x");
+    });
+
+    const b = {};
+    env.setLatest(b);
+    await env.run({ requestID: "b", env: b }, async () => {
+      expect(process.env.HANDLER_FN).toBeUndefined();
+      expect("HANDLER_FN" in process.env).toBe(false);
+      expect(Object.keys(process.env)).not.toContain("HANDLER_FN");
+      expect({ ...process.env }).toEqual({ SST_POOL: "bundle" });
+    });
+    expect(process.env.HANDLER_FN).toBeUndefined();
+    expect("HANDLER_FN" in process.env).toBe(false);
+  });
+
+  it("hides the seed function's keys from invocations", async () => {
+    const env = createInvocationEnv({
+      HANDLER_FN: "seed",
+      SST_POOL: "bundle",
+      SST_POOL_SEED_KEYS: "HANDLER_FN",
+    });
+    restores.push(env.install());
+
+    // Module scope still sees the seed before the first request.
+    expect(process.env.HANDLER_FN).toBe("seed");
+    await env.run({ requestID: "r", env: { IG_POOL: "1gb" } }, async () => {
+      expect(process.env.HANDLER_FN).toBeUndefined();
+      expect("HANDLER_FN" in process.env).toBe(false);
+      expect(process.env.SST_POOL).toBe("bundle");
+      expect(process.env.SST_POOL_SEED_KEYS).toBeUndefined();
+      expect(Object.keys(process.env).sort()).toEqual(["IG_POOL", "SST_POOL"]);
+    });
+    env.setLatest({ IG_POOL: "1gb" });
+    expect(process.env.HANDLER_FN).toBeUndefined();
+  });
+
+  it("keeps module-scope writes visible to invocations", async () => {
+    const env = createInvocationEnv({ SST_POOL_SEED_KEYS: "" });
+    restores.push(env.install());
+
+    process.env.LATE = "x";
+    await env.run({ requestID: "r", env: {} }, async () => {
+      expect(process.env.LATE).toBe("x");
+    });
+    env.setLatest({});
+    expect(process.env.LATE).toBe("x");
+
+    delete process.env.LATE;
+    await env.run({ requestID: "s", env: {} }, async () => {
+      expect("LATE" in process.env).toBe(false);
+    });
+  });
+
+  it("replaces the latest env outside an invocation", () => {
+    const env = createInvocationEnv({ W: "w" });
+    restores.push(env.install());
+
+    env.setLatest({ A: "1" });
+    expect(process.env.A).toBe("1");
+    env.setLatest({ B: "2" });
+    expect(process.env.A).toBeUndefined();
+    expect({ ...process.env }).toEqual({ W: "w", B: "2" });
+  });
 });
 
 describe("tagConsole", () => {

@@ -252,23 +252,26 @@ async function runLoop() {
     }
 
     // Code that snapshots process.env outside any invocation (module scope)
-    // sees the environment of the latest invocation.
-    Object.assign(env.baseEnv, invocationEnv);
+    // sees the environment of the latest invocation, replaced, not merged.
+    env.setLatest(invocationEnv);
     lastContext = context;
     (global as any)[Symbol.for("aws.lambda.runtime.requestId")] =
       context.awsRequestId;
-
-    if (describe) {
-      await post(
-        `/runtime/invocation/${context.awsRequestId}/describe`,
-        await describeEvent(event, context),
-      ).catch(() => {});
-    }
 
     const store: InvocationStore = {
       requestID: context.awsRequestId,
       env: invocationEnv,
     };
+
+    // describe() reads the function's env (e.g. which handler it names), so
+    // it runs inside the invocation like the handler does.
+    if (describe) {
+      await post(
+        `/runtime/invocation/${context.awsRequestId}/describe`,
+        await env.run(store, () => describeEvent(event, context)),
+      ).catch(() => {});
+    }
+
     let response: unknown;
     try {
       response = await env.run(store, () => fn(event, context));

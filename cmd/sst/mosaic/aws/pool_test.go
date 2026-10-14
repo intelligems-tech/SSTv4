@@ -352,3 +352,11 @@ func TestWarmStartsAWorkerWithASourceEnvWithoutReenteringThePool(t *testing.T) {
 		t.Fatalf("the warm worker must start with the source env, got %v", gotEnv)
 	}
 }
+
+func TestPoolWorkerEnvListsTheSeedKeys(t *testing.T) {
+	got := poolWorkerEnv([]string{"HANDLER_FN=a", "AWS_REGION=us-east-1"})
+	want := []string{"HANDLER_FN=a", "AWS_REGION=us-east-1", "SST_POOL=bundle", "SST_POOL_SEED_KEYS=HANDLER_FN,AWS_REGION"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}

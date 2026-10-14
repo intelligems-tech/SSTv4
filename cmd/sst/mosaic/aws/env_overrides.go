@@ -60,3 +60,19 @@ func envMap(entries []string) map[string]string {
 	}
 	return result
 }
+
+// envKeys lists the distinct keys of KEY=VALUE entries, comma separated, in
+// first-seen order.
+func envKeys(entries []string) string {
+	keys := make([]string, 0, len(entries))
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	return strings.Join(keys, ",")
+}

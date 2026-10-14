@@ -1013,6 +1013,8 @@ var root = &cli.Command{
 				}, "\n"),
 			},
 			Flags: []cli.Flag{
+				{Name: "import-pending-create-urn", Type: "string", Description: cli.Description{Short: "URN of an existing resource with a pending creation"}},
+				{Name: "import-pending-create-id", Type: "string", Description: cli.Description{Short: "Provider ID of the pending creation to import"}},
 				{
 					Name: "target",
 					Type: "string",

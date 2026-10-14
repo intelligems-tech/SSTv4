@@ -27,39 +27,76 @@ export function tagLine(requestID: string, line: string): string {
   return `${TAG}${requestID}${TAG}${line}`;
 }
 
-export function createInvocationEnv(seed: NodeJS.ProcessEnv = process.env) {
+/**
+ * The keys of the worker's process environment that came from one of the
+ * functions it serves (the seed), listed by the dev loop.
+ */
+export const SEED_KEYS_VAR = "SST_POOL_SEED_KEYS";
+
+/**
+ * Builds the `process.env` stand-in for a pooled worker from three layers:
+ *
+ * - `workerEnv`: the worker's own environment, the process env minus the seed
+ *   function's keys, plus writes made outside any invocation (module scope).
+ * - `baseEnv`: what code outside any invocation reads. It starts as the full
+ *   process env, then holds `workerEnv` plus the latest invocation's env,
+ *   replaced on every request by `setLatest`, never merged.
+ * - the invocation's own env, read first while an invocation runs.
+ *
+ * An invocation falls back to `workerEnv` only, so it never sees keys that
+ * belong to another function: neither the seed's nor an earlier request's.
+ */
+export function createInvocationEnv(
+  seed: NodeJS.ProcessEnv = process.env,
+  seedKeys: string[] = (seed[SEED_KEYS_VAR] ?? "").split(",").filter(Boolean),
+) {
   const invocation = new AsyncLocalStorage<InvocationStore>();
+  const workerEnv: Record<string, string | undefined> = { ...seed };
+  for (const key of [...seedKeys, SEED_KEYS_VAR]) delete workerEnv[key];
   const baseEnv: Record<string, string | undefined> = { ...seed };
 
-  const currentEnv = () => invocation.getStore()?.env ?? baseEnv;
+  const fallback = () => (invocation.getStore() ? workerEnv : baseEnv);
 
   const proxy = new Proxy(baseEnv, {
     get(_, key) {
       if (typeof key !== "string") return undefined;
       const store = invocation.getStore();
       if (store && key in store.env) return store.env[key];
-      return baseEnv[key];
+      return fallback()[key];
     },
     set(_, key, value) {
       if (typeof key !== "string") return false;
-      currentEnv()[key] = value === undefined ? undefined : String(value);
+      const next = value === undefined ? undefined : String(value);
+      const store = invocation.getStore();
+      if (store) {
+        store.env[key] = next;
+        return true;
+      }
+      workerEnv[key] = next;
+      baseEnv[key] = next;
       return true;
     },
     has(_, key) {
       if (typeof key !== "string") return false;
       const store = invocation.getStore();
-      return (store !== undefined && key in store.env) || key in baseEnv;
+      return (store !== undefined && key in store.env) || key in fallback();
     },
     deleteProperty(_, key) {
       if (typeof key !== "string") return false;
-      delete currentEnv()[key];
+      const store = invocation.getStore();
+      if (store) {
+        delete store.env[key];
+        return true;
+      }
+      delete workerEnv[key];
+      delete baseEnv[key];
       return true;
     },
     ownKeys() {
       const store = invocation.getStore();
       return [
         ...new Set([
-          ...Object.keys(baseEnv),
+          ...Object.keys(fallback()),
           ...(store ? Object.keys(store.env) : []),
         ]),
       ];
@@ -68,9 +105,10 @@ export function createInvocationEnv(seed: NodeJS.ProcessEnv = process.env) {
       if (typeof key !== "string") return undefined;
       const store = invocation.getStore();
       const inStore = store !== undefined && key in store.env;
-      if (!inStore && !(key in baseEnv)) return undefined;
+      const base = fallback();
+      if (!inStore && !(key in base)) return undefined;
       return {
-        value: inStore ? store!.env[key] : baseEnv[key],
+        value: inStore ? store!.env[key] : base[key],
         writable: true,
         enumerable: true,
         configurable: true,
@@ -81,8 +119,13 @@ export function createInvocationEnv(seed: NodeJS.ProcessEnv = process.env) {
   return {
     /** The proxy that stands in for `process.env`. */
     proxy,
-    /** The worker-wide environment, read when no invocation is running. */
+    /** The environment read when no invocation is running. */
     baseEnv,
+    /** Makes `invocationEnv` the latest one outside any invocation. */
+    setLatest(invocationEnv: Record<string, string | undefined>) {
+      for (const key of Object.keys(baseEnv)) delete baseEnv[key];
+      Object.assign(baseEnv, workerEnv, invocationEnv);
+    },
     /** Runs `fn` with `store` as the current invocation. */
     run<T>(store: InvocationStore, fn: () => T): T {
       return invocation.run(store, fn);

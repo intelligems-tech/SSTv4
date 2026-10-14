@@ -16,15 +16,17 @@ type BuildFailedEvent struct {
 }
 
 type StackInput struct {
-	Command    string
-	Target     []string
-	Exclude    []string
-	ServerPort int
-	Dev        bool
-	Verbose    bool
-	Continue   bool
-	SkipHash   string
-	PolicyPath string
+	PendingCreateURN string
+	PendingCreateID  string
+	Command          string
+	Target           []string
+	Exclude          []string
+	ServerPort       int
+	Dev              bool
+	Verbose          bool
+	Continue         bool
+	SkipHash         string
+	PolicyPath       string
 }
 
 type ConcurrentUpdateEvent struct{}
