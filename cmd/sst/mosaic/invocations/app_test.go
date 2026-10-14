@@ -292,3 +292,48 @@ func TestKeysMoveTheInvocationSelectionWhileFollowing(t *testing.T) {
 		t.Fatal("j must not be undone by follow on the next draw")
 	}
 }
+
+func TestLogsKeepTheirTerminalColoursButCopyAsPlainText(t *testing.T) {
+	h := newHarness(t)
+	h.app.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: "r1"})
+	h.app.Apply(&aws.FunctionLogEvent{RequestID: "r1", Line: "\x1b[34mDEBUG\x1b[39m: \x1b[1;36mSTAGE\x1b[0m done"})
+	h.key(tcell.KeyEnter)
+	h.key(tcell.KeyEnter)
+
+	text := h.text()
+	if strings.Contains(text, "[34m") || !strings.Contains(text, "DEBUG: STAGE done") {
+		t.Fatalf("the detail must render the line without escape codes:\n%s", text)
+	}
+	cells, width, _ := h.screen.GetContents()
+	styleAt := func(needle string) tcell.Style {
+		for y, line := range strings.Split(text, "\n") {
+			if x := strings.Index(line, needle); x >= 0 {
+				return cells[y*width+len([]rune(line[:x]))].Style
+			}
+		}
+		t.Fatalf("%q not drawn", needle)
+		return tcell.StyleDefault
+	}
+	if styleAt("DEBUG") != styleNormal.Foreground(tcell.PaletteColor(4)) {
+		t.Fatal("DEBUG must be blue")
+	}
+	if styleAt("STAGE") != styleNormal.Foreground(tcell.PaletteColor(6)).Bold(true) {
+		t.Fatal("STAGE must be bold cyan")
+	}
+	if styleAt(": STAGE") != styleNormal || styleAt(" done") != styleNormal {
+		t.Fatal("39 and 0 must return to the pane's own style")
+	}
+
+	h.press('c')
+	if len(h.copied) != 1 || h.copied[0] != "DEBUG: STAGE done" {
+		t.Fatalf("c must copy plain text, copied %q", h.copied)
+	}
+}
+
+func TestApplySGRReadsExtendedColours(t *testing.T) {
+	got := applySGR(styleNormal, styleNormal, []int{38, 5, 208, 48, 2, 10, 20, 30, 4})
+	want := styleNormal.Foreground(tcell.PaletteColor(208)).Background(tcell.NewRGBColor(10, 20, 30)).Underline(true)
+	if got != want {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

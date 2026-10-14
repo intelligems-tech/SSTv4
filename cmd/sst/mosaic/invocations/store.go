@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/aws"
 	"github.com/sst/sst/v3/pkg/project"
 )
@@ -119,6 +120,8 @@ func (s *Store) Apply(evt interface{}) bool {
 		if !ok {
 			return false
 		}
+		// Kept as logged, colour codes included: the detail view renders
+		// them, while search and copying read the stripped text.
 		inv.Logs = append(inv.Logs, evt.Line)
 	case *aws.FunctionResponseEvent:
 		inv, ok := s.requests[evt.RequestID]
@@ -132,7 +135,11 @@ func (s *Store) Apply(evt interface{}) bool {
 		if !ok {
 			return false
 		}
-		inv.ErrorType, inv.ErrorMsg, inv.Trace = evt.ErrorType, evt.ErrorMessage, evt.Trace
+		inv.ErrorType, inv.ErrorMsg = evt.ErrorType, ansi.Strip(evt.ErrorMessage)
+		inv.Trace = make([]string, len(evt.Trace))
+		for i, frame := range evt.Trace {
+			inv.Trace[i] = ansi.Strip(frame)
+		}
 		s.finish(inv, Failed)
 	case *aws.QueueStallsEvent:
 		s.Stalls = evt.Stalls
@@ -256,6 +263,7 @@ func (s *Store) Search(query string) []Match {
 		for i := len(group.Invocations) - 1; i >= 0; i-- {
 			inv := group.Invocations[i]
 			for line, text := range inv.Logs {
+				text = ansi.Strip(text)
 				if strings.Contains(strings.ToLower(text), query) {
 					matches = append(matches, Match{Group: group, Invocation: inv, Line: line, Text: text})
 				}

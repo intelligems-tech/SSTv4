@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/gdamore/tcell/v2"
 	"github.com/sst/sst/v3/cmd/sst/mosaic/aws"
 	"github.com/sst/sst/v3/pkg/prettyjson"
@@ -672,27 +673,43 @@ func (a *App) jsonLines(data []byte) []prettyjson.Line {
 	return textLines(PrettyJSON(data), prettyjson.Text)
 }
 
-// logLines are an invocation's logs, with JSON pretty printed in pretty mode.
+// logLines are an invocation's logs as plain text, with JSON pretty printed
+// in pretty mode.
 func (a *App) logLines(inv *Invocation) []string {
 	lines := make([]string, 0, len(inv.Logs))
-	for _, line := range a.coloredLogLines(inv) {
-		lines = append(lines, prettyjson.Plain([]prettyjson.Line{line}))
+	for _, line := range inv.Logs {
+		plain := ansi.Strip(line)
+		if formatted, ok := a.jsonLog(plain); ok {
+			plain = prettyjson.Plain(formatted)
+		}
+		lines = append(lines, plain)
 	}
 	return lines
 }
 
-func (a *App) coloredLogLines(inv *Invocation) []prettyjson.Line {
-	lines := []prettyjson.Line{}
+// logRows styles an invocation's logs for the detail view: JSON lines are
+// pretty printed in pretty mode, everything else keeps its terminal colours.
+func (a *App) logRows(inv *Invocation, base tcell.Style) []styledLine {
+	rows := []styledLine{}
 	for _, line := range inv.Logs {
-		if a.pretty {
-			if formatted, ok := prettyjson.FormatLogLine(line); ok {
-				lines = append(lines, formatted...)
-				continue
+		if formatted, ok := a.jsonLog(ansi.Strip(line)); ok {
+			for _, row := range formatted {
+				rows = append(rows, wrapLine(row, a.width, base)...)
 			}
+			continue
 		}
-		lines = append(lines, textLines(line, prettyjson.Text)...)
+		for _, row := range ansiLines(line, base) {
+			rows = append(rows, wrapSpans(row, a.width)...)
+		}
 	}
-	return lines
+	return rows
+}
+
+func (a *App) jsonLog(line string) ([]prettyjson.Line, bool) {
+	if !a.pretty {
+		return nil, false
+	}
+	return prettyjson.FormatLogLine(line)
 }
 
 func textLines(text string, kind prettyjson.Kind) []prettyjson.Line {
@@ -725,21 +742,30 @@ type styledLine []span
 // width; text segments take base, JSON segments their kind's colour.
 // Segments never hold a newline: formatted output is split into Lines.
 func wrapLine(line prettyjson.Line, width int, base tcell.Style) []styledLine {
-	rows := []styledLine{{}}
-	used := 0
+	spans := make(styledLine, 0, len(line))
 	for _, segment := range line {
 		style, ok := jsonStyles[segment.Kind]
 		if !ok {
 			style = base
 		}
-		runes := []rune(strings.ReplaceAll(segment.Text, "\t", "  "))
+		spans = append(spans, span{segment.Text, style})
+	}
+	return wrapSpans(spans, width)
+}
+
+// wrapSpans breaks a styled line into rows no wider than width.
+func wrapSpans(line styledLine, width int) []styledLine {
+	rows := []styledLine{{}}
+	used := 0
+	for _, part := range line {
+		runes := []rune(strings.ReplaceAll(part.text, "\t", "  "))
 		for width > 0 && used+len(runes) > width {
 			take := width - used
-			rows[len(rows)-1] = append(rows[len(rows)-1], span{string(runes[:take]), style})
+			rows[len(rows)-1] = append(rows[len(rows)-1], span{string(runes[:take]), part.style})
 			rows = append(rows, styledLine{})
 			runes, used = runes[take:], 0
 		}
-		rows[len(rows)-1] = append(rows[len(rows)-1], span{string(runes), style})
+		rows[len(rows)-1] = append(rows[len(rows)-1], span{string(runes), part.style})
 		used += len(runes)
 	}
 	return rows
@@ -780,7 +806,7 @@ func (a *App) detailLines(inv *Invocation) []styledLine {
 	if len(inv.Logs) == 0 {
 		add("No logs.", styleDim)
 	}
-	addLines(a.coloredLogLines(inv), styleNormal)
+	lines = append(lines, a.logRows(inv, styleNormal)...)
 	return lines
 }
 

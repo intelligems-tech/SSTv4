@@ -130,3 +130,19 @@ func TestPreviewSummarisesEventShapes(t *testing.T) {
 		}
 	}
 }
+
+func TestErrorsDropTerminalColourCodesAndSearchIgnoresThem(t *testing.T) {
+	s, _ := newTestStore()
+	s.Apply(&aws.FunctionInvokedEvent{FunctionID: "Fn", RequestID: "r1"})
+	s.Apply(&aws.FunctionLogEvent{RequestID: "r1", Line: "\x1b[34mDEBUG\x1b[39m: \x1b[36mSTAGE: local\x1b[39m"})
+	s.Apply(&aws.FunctionErrorEvent{RequestID: "r1", ErrorType: "Error", ErrorMessage: "\x1b[31mboom\x1b[39m", Trace: []string{"\x1b[2mat handler\x1b[22m"}})
+
+	inv := s.Groups("")[0].Invocations[0]
+	if inv.ErrorMsg != "boom" || inv.Trace[0] != "at handler" {
+		t.Fatalf("unexpected %q %q", inv.ErrorMsg, inv.Trace)
+	}
+	matches := s.Search("DEBUG: STAGE")
+	if len(matches) != 1 || matches[0].Text != "DEBUG: STAGE: local" {
+		t.Fatalf("search must match and show the text without colour codes, got %+v", matches)
+	}
+}
