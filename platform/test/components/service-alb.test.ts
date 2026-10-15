@@ -1,5 +1,5 @@
-import { describe, beforeAll, it, expect } from "vitest";
-import "../../src/global.d.ts";
+/// <reference path="../../src/global.d.ts" />
+import { describe, beforeAll, it, expect, vi } from "vitest";
 import * as pulumi from "@pulumi/pulumi";
 import fs from "fs";
 import path from "path";
@@ -27,6 +27,20 @@ global.$cli = {
 global.$jsonStringify = JSON.stringify;
 // Suppress SST_SERVER RPC calls during tests
 process.env.SST_SERVER = "http://localhost:13557";
+// fargate.ts reads the bootstrap bucket over RPC; answer locally so the test
+// neither needs nor reaches a running `sst` server.
+vi.mock("../../src/components/aws/helpers/bootstrap", () => ({
+  bootstrap: {
+    forRegion: async () => ({
+      asset: "sst-asset-mock",
+      assetEcrRegistryId: "123456789",
+      assetEcrUrl: "123456789.dkr.ecr.us-east-1.amazonaws.com/sst-asset",
+      state: "sst-state-mock",
+      appsyncHttp: "",
+      appsyncRealtime: "",
+    }),
+  },
+}));
 
 const createdResources: pulumi.runtime.MockResourceArgs[] = [];
 
@@ -51,6 +65,14 @@ pulumi.runtime.setMocks(
             "sst:ref:sg": "sg-mock-id",
             "sst:ref:vpc-id": "vpc-123",
           },
+          // A load balancer read with .get() has no inputs; give it what
+          // Alb.get() reads from a real one.
+          ...(args.type === "aws:lb/loadBalancer:LoadBalancer"
+            ? {
+                securityGroups: args.inputs.securityGroups ?? ["sg-mock-id"],
+                vpcId: args.inputs.vpcId ?? "vpc-123",
+              }
+            : {}),
         },
       };
     },

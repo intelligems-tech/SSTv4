@@ -1,5 +1,5 @@
+/// <reference path="../../src/global.d.ts" />
 import { describe, beforeAll, it, expect } from "vitest";
-import "../../src/global.d.ts";
 import * as pulumi from "@pulumi/pulumi";
 
 // @ts-ignore
@@ -113,7 +113,7 @@ describe("Alb", function () {
   });
 
   describe("#getListener", () => {
-    it("throws for non-existent listener on non-ref ALB", async () => {
+    it("looks up a listener it did not declare", async () => {
       const alb = new Alb("TestAlbMissing", {
         vpc: {
           id: "vpc-123",
@@ -123,22 +123,9 @@ describe("Alb", function () {
         listeners: [{ port: 80, protocol: "http" }],
       });
 
-      expect(() => alb.getListener("https", 443)).toThrow(
-        /Listener "HTTPS:443" not found/,
-      );
-    });
-
-    it("error message includes ALB name", async () => {
-      const alb = new Alb("MyNamedAlb", {
-        vpc: {
-          id: "vpc-123",
-          publicSubnets: ["subnet-a", "subnet-b"],
-          privateSubnets: ["subnet-c", "subnet-d"],
-        },
-        listeners: [{ port: 80, protocol: "http" }],
-      });
-
-      expect(() => alb.getListener("https", 443)).toThrow(/MyNamedAlb/);
+      const listener = alb.getListener("https", 443);
+      expect(listener).toBeDefined();
+      expect(alb.getListener("https", 443)).toBe(listener);
     });
   });
 
