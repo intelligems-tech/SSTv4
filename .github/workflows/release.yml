@@ -59,6 +59,12 @@ jobs:
         env:
           SKIP_BRIDGE_TASK: "1"
 
+      # pkg/runtime/python tests run `uv build`.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
       - name: Run Go tests
         run: go test -vet=all ./...
 
