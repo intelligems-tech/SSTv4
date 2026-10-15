@@ -8,7 +8,7 @@ import metafile from "../../../dist/metadata.json";
 import artifacts from "../../../dist/artifacts.json";
 import pkg from "../package.json";
 const nextPkg = JSON.parse(JSON.stringify(pkg));
-nextPkg.version = metafile.version.endsWith("-ig.1")
+nextPkg.version = /-ig\.\d+$/.test(metafile.version)
   ? metafile.version
   : `${metafile.version}-ig.1`;
 nextPkg.optionalDependencies = nextPkg.optionalDependencies || {};
