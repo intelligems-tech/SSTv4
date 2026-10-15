@@ -9,6 +9,8 @@ on:
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
+  # id-token: npm trusted publishing (OIDC); no npm token is stored.
+  id-token: write
   contents: write
 
 jobs:
@@ -69,9 +71,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Trusted publishing needs npm >= 11.5.1.
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - name: Release JS SDK
         run: |
           cd sdk/js
           bun run release
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

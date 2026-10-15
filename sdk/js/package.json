@@ -8,7 +8,7 @@
   "main": "./dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/intelligems-io/sst.git"
+    "url": "git+https://github.com/intelligems-tech/SSTv4.git"
   },
   "license": "MIT",
   "exports": {
