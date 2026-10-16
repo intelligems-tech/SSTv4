@@ -59,6 +59,14 @@ var CmdDiff = &cli.Command{
 	},
 	Flags: []cli.Flag{
 		{
+			Name: "exclude-all",
+			Type: "bool",
+			Description: cli.Description{
+				Short: "Run the program without planning resource changes",
+				Long:  "Exclude every resource from the preview, including resources removed from the program.",
+			},
+		},
+		{
 			Name: "target",
 			Description: cli.Description{
 				Short: "Run it only for a component",
@@ -122,6 +130,9 @@ var CmdDiff = &cli.Command{
 	},
 	Run: func(c *cli.Cli) error {
 		jsonOutput := c.Bool("json")
+		if c.Bool("exclude-all") && (c.String("target") != "" || c.String("exclude") != "") {
+			return fmt.Errorf("--exclude-all cannot be combined with --target or --exclude")
+		}
 
 		p, err := c.InitProject()
 		if err != nil {
@@ -175,6 +186,7 @@ var CmdDiff = &cli.Command{
 			ServerPort: s.Port,
 			Dev:        c.Bool("dev"),
 			Target:     target,
+			ExcludeAll: c.Bool("exclude-all"),
 			Exclude:    exclude,
 			Verbose:    c.Bool("verbose"),
 			PolicyPath: c.String("policy"),

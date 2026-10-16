@@ -355,20 +355,11 @@ func (p *Project) Run(ctx context.Context, input *StackInput) error {
 		args = append(args, "--policy-pack", policyPath)
 	}
 
-	if input.Target != nil {
-		for _, item := range input.Target {
-			index := slices.IndexFunc(completed.Resources, func(res apitype.ResourceV3) bool {
-				return res.URN.Name() == item
-			})
-			if index == -1 {
-				return util.NewReadableError(nil, fmt.Sprintf("Target not found: %v", item))
-			}
-			args = append(args, "--target", string(completed.Resources[index].URN))
-		}
-		if len(input.Target) > 0 {
-			args = append(args, "--target-dependents")
-		}
+	targetArgs, err := targetArguments(input, completed.Resources)
+	if err != nil {
+		return util.NewReadableError(nil, err.Error())
 	}
+	args = append(args, targetArgs...)
 
 	if input.Exclude != nil {
 		for _, item := range input.Exclude {

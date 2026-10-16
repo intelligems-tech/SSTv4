@@ -20,6 +20,7 @@ type StackInput struct {
 	PendingCreateID  string
 	Command          string
 	Target           []string
+	ExcludeAll       bool
 	Exclude          []string
 	ServerPort       int
 	Dev              bool
