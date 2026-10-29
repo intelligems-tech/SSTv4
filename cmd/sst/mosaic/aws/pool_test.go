@@ -289,7 +289,7 @@ func TestSplitTaggedAndAttribution(t *testing.T) {
 
 func TestParsePoolConfigDefaultsAndBounds(t *testing.T) {
 	cfg := parsePoolConfig(poolEnv{})
-	if cfg.Size != 4 || cfg.Concurrency != 10 || cfg.IdleTimeout != 5*time.Minute || cfg.Warmup != 1 || cfg.MaxHeapMB != 1024 {
+	if cfg.Size != 4 || cfg.Concurrency != 10 || cfg.IdleTimeout != 5*time.Minute || cfg.Warmup != 1 || cfg.MaxHeapMB != 10240 {
 		t.Fatalf("defaults: %+v", cfg)
 	}
 	cfg = parsePoolConfig(poolEnv{size: "2", warmup: "9", concurrency: "0", maxHeapMB: "-1", idleMs: "250"})

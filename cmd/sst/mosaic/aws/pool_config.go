@@ -51,7 +51,9 @@ func parsePoolConfig(env poolEnv) PoolConfig {
 		Concurrency: intOr(env.concurrency, 10),
 		IdleTimeout: time.Duration(intOr(env.idleMs, 5*60*1000)) * time.Millisecond,
 		Warmup:      intOr(env.warmup, 1),
-		MaxHeapMB:   intOr(env.maxHeapMB, 1024),
+		// A worker can run any function in the pool, so it allows what the
+		// largest Lambda can use: 10,240 MB.
+		MaxHeapMB:   intOr(env.maxHeapMB, 10240),
 		SourceMaps:  env.sourceMaps,
 		DebugMemory: env.debugMemory,
 	}
